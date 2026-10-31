@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-10-31
+
 ### Fixed
 
 - **Invalid identifiers from the spec**: parameter names, `operationId`s and schema names are free-form in OpenAPI, but the generator emitted them verbatim. A path parameter `{user-id}`, a query parameter `filter[name]`, an `operationId: get-users` or a schema named `200Response` produced non-compiling TypeScript (and made `generate` crash inside Prettier). Names that are already valid identifiers are preserved verbatim — `operationId: UsersController_rangeUsers` still maps to `UsersController_rangeUsersResource`, so no public API is renamed. Only invalid names are quoted (properties) or sanitized (identifiers).
