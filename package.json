@@ -49,29 +49,29 @@
     "url": "git+https://github.com/realdeepnull/ng-openapi-signals.git"
   },
   "dependencies": {
-    "@apidevtools/swagger-parser": "^12.1.0",
+    "@apidevtools/swagger-parser": "^13.1.0",
     "commander": "^15.0.0",
     "jiti": "^2.7.0",
-    "prettier": "^3.9.4"
+    "prettier": "^3.9.10"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
     "@eslint/js": "^10.0.1",
-    "@types/node": "^26.1.0",
-    "eslint": "^10.6.0",
-    "globals": "^17.7.0",
-    "knip": "^6.32.2",
-    "publint": "^0.3.23",
-    "tsdown": "^0.22.5",
-    "tsx": "^4.23.0",
+    "@types/node": "^26.6.6",
+    "eslint": "^10.14.0",
+    "globals": "^17.13.0",
+    "knip": "^6.44.0",
+    "publint": "^0.3.25",
+    "tsdown": "^0.23.4",
+    "tsx": "^4.23.15",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.62.1",
-    "vitest": "^4.1.9"
+    "typescript-eslint": "^8.72.1",
+    "vitest": "^5.0.5"
   },
   "peerDependencies": {
     "@angular/core": ">=22.0.0"
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.19.0"
   }
 }

@@ -33,7 +33,7 @@ GET endpoints are generated as Angular `resource()` APIs, while mutating endpoin
 
 ## Requirements
 
-- Node.js 22 or newer
+- Node.js 22.19 or newer
 - Angular 22 or newer
 - TypeScript
 - OpenAPI 3.x JSON or YAML specification
