@@ -7,58 +7,28 @@ import type {
   QueryStyle,
   RequestBodyModel,
 } from './types';
-import {camelCase, kebabCase, pascalCase, serviceNameFromTag} from './naming';
+import {
+  formatPropertyAccess,
+  formatPropertyName,
+  kebabCase,
+  serviceNameFromTag,
+  toCamelIdentifier,
+  toPascalIdentifier,
+  uniqueFileName,
+  uniqueIdentifier,
+} from './naming';
 import {schemaToTsType} from './schema-to-ts';
-import type {OpenAPISchema} from '../openapi';
-
-/** Permissive OpenAPI document shape — only the fields we walk. */
-interface OpenApiDocument {
-  paths?: Record<string, OpenApiPathItem>;
-}
-
-/** A single path item (collection of operations + path-level parameters). */
-interface OpenApiPathItem {
-  get?: OpenApiOperation;
-  post?: OpenApiOperation;
-  put?: OpenApiOperation;
-  patch?: OpenApiOperation;
-  delete?: OpenApiOperation;
-  parameters?: OpenApiParameter[];
-}
-
-/** An operation (e.g. GET /users). */
-interface OpenApiOperation {
-  operationId?: string;
-  tags?: string[];
-  parameters?: OpenApiParameter[];
-  requestBody?: OpenApiRequestBody;
-  responses?: Record<string, OpenApiResponse>;
-}
-
-/** A parameter (path/query/header/cookie). */
-interface OpenApiParameter {
-  name: string;
-  in: 'path' | 'query' | 'header' | 'cookie';
-  required?: boolean;
-  schema?: OpenAPISchema;
-  style?: QueryStyle;
-  explode?: boolean;
-}
-
-/** A response object. */
-interface OpenApiResponse {
-  content?: Record<string, OpenApiContent>;
-}
-
-/** A media-type content entry. */
-interface OpenApiContent {
-  schema?: OpenAPISchema;
-}
-
-/** A request body object. */
-interface OpenApiRequestBody {
-  content?: Record<string, OpenApiContent>;
-}
+import {isQueryStyle} from './guards';
+import {sanitizeIdentifier} from './naming';
+import type {
+  OpenApiDocument,
+  OpenApiOperation,
+  OpenApiParameter,
+  OpenApiRequestBody,
+  OpenApiResponse,
+  RefResolver,
+} from './document';
+import {isReference} from './document';
 
 const HTTP_METHODS: HttpMethod[] = ['get', 'post', 'put', 'patch', 'delete'];
 
@@ -76,6 +46,24 @@ export function extractOperations(
   const defaultQueryStyle: QueryStyle = runtime?.defaultQueryStyle ?? DEFAULT_QUERY_STYLE;
   const defaultQueryExplode: boolean = runtime?.defaultQueryExplode ?? DEFAULT_QUERY_EXPLODE;
 
+  // `bundle()` hoists external refs into `#/components/**`, but does not
+  // dereference them. Reusable parameters, request bodies and responses are
+  // therefore still `$ref` objects here and must be resolved before use —
+  // otherwise every such operation would silently lose its params/body/type.
+  const resolve: RefResolver = (value, kind) => {
+    if (!isReference(value)) {
+      return value as never;
+    }
+
+    const prefix = `#/components/${kind}/`;
+    if (!value.$ref.startsWith(prefix)) {
+      return undefined;
+    }
+
+    const name = value.$ref.slice(prefix.length);
+    return api.components?.[kind]?.[name] as never;
+  };
+
   const operations: OperationModel[] = [];
 
   for (const [path, pathItem] of Object.entries(api.paths ?? {})) {
@@ -86,7 +74,12 @@ export function extractOperations(
         continue;
       }
 
-      const parameters = [...(pathItem.parameters ?? []), ...(operation.parameters ?? [])];
+      const parameters = [
+        ...(pathItem.parameters ?? []),
+        ...(operation.parameters ?? []),
+      ]
+        .map((parameter) => resolve(parameter, 'parameters'))
+        .filter((parameter): parameter is OpenApiParameter => parameter !== undefined);
 
       const pathParams = parameters
         .filter((parameter) => parameter.in === 'path')
@@ -100,11 +93,17 @@ export function extractOperations(
         .filter((parameter) => parameter.in === 'header')
         .map((parameter) => toParameterModel(parameter, defaultQueryStyle, defaultQueryExplode));
 
-      const requestBody = extractRequestBody(operation, runtime?.preferContentType);
-      const {responseType, responseParser} = extractResponseType(operation);
+      const requestBody = extractRequestBody(
+        resolve(operation.requestBody, 'requestBodies'),
+        runtime?.preferContentType,
+      );
+      const {responseType, responseParser} = extractResponseType(operation, resolve);
 
       operations.push({
-        operationId: operation.operationId ?? fallbackOperationId(method, path),
+        operationId: sanitizeIdentifier(
+          operation.operationId ?? fallbackOperationId(method, path),
+          'operation',
+        ),
         tag: operation.tags?.[0] ?? 'Default',
         method,
         path,
@@ -127,19 +126,30 @@ export function generateApiFiles(
 ): Record<string, string> {
   const files: Record<string, string> = {};
   const grouped = config.groupBy === 'path' ? groupByPath(operations) : groupByTag(operations);
+  const usedFileNames = new Set<string>();
+  const usedClassNames = new Set<string>();
+  const exportNames: string[] = [];
+  const seenExports = new Set<string>();
 
   for (const [group, groupOperations] of Object.entries(grouped)) {
-    files[`resources/${kebabCase(group)}.api.ts`] = generateService(
-      serviceNameFromTag(group),
-      groupOperations,
-      config,
-    );
+    // `kebabCase()` can collide (`User` vs `user`, or tags differing only in
+    // punctuation) and returns an empty string for symbol-only tags. Both
+    // the file name and the service class name must stay unique, otherwise
+    // the barrel re-exports two identical members.
+    const fileName = uniqueFileName(kebabCase(group), usedFileNames, 'default');
+    const className = uniqueIdentifier(serviceNameFromTag(group), usedClassNames);
+
+    files[`resources/${fileName}.api.ts`] = generateService(className, groupOperations, config);
+
+    const exportName = `${fileName}.api`;
+    if (!seenExports.has(exportName)) {
+      seenExports.add(exportName);
+      exportNames.push(exportName);
+    }
   }
 
   files['resources/index.ts'] =
-    Object.keys(grouped)
-      .map((group) => `export * from './${kebabCase(group)}.api';`)
-      .join('\n') + '\n';
+    exportNames.map((name) => `export * from './${name}';`).join('\n') + '\n';
 
   return files;
 }
@@ -184,18 +194,38 @@ function generateService(
       : '';
   const modelImportLine = modelImports ? `${modelImports}\n` : '';
 
+  // Duplicate `operationId`s across paths (a common hand-written-spec mistake)
+  // would emit two methods with the same name — invalid TypeScript. Suffix the
+  // later ones instead of failing the whole generation. Derived member names
+  // (`…Resource`, `…Mutation`) are reserved as well so a later operation cannot
+  // collide with them.
+  const usedMethodNames = new Set<string>();
+  const methodNames = operations.map((operation) => {
+    const baseName = uniqueIdentifier(operation.operationId, usedMethodNames);
+
+    if (operation.method === 'get') {
+      usedMethodNames.add(`${baseName}Resource`);
+    } else if (signalMutations) {
+      usedMethodNames.add(`${baseName}Mutation`);
+    }
+
+    return baseName;
+  });
+
   const methods = operations
-    .map((operation) => {
+    .map((operation, index) => {
+      const methodName = methodNames[index]!;
+
       if (operation.method === 'get') {
-        return generateResourceMethod(operation, responseTypeHints);
+        return generateResourceMethod(operation, methodName, responseTypeHints);
       }
 
-      const promiseMethod = generateMutationMethod(operation, responseTypeHints);
+      const promiseMethod = generateMutationMethod(operation, methodName, responseTypeHints);
       if (!signalMutations) {
         return promiseMethod;
       }
 
-      return `${promiseMethod}\n\n${generateSignalMutationMethod(operation)}`;
+      return `${promiseMethod}\n\n${generateSignalMutationMethod(operation, methodName)}`;
     })
     .join('\n\n');
 
@@ -211,7 +241,11 @@ ${methods}
 `;
 }
 
-function generateResourceMethod(operation: OperationModel, responseTypeHints: boolean): string {
+function generateResourceMethod(
+  operation: OperationModel,
+  methodName: string,
+  responseTypeHints: boolean,
+): string {
   const hasParams =
     operation.pathParams.length + operation.queryParams.length + operation.headerParams.length > 0;
   const paramsType = generateParamsType(operation);
@@ -254,7 +288,7 @@ function generateResourceMethod(operation: OperationModel, responseTypeHints: bo
     ? `loader: ({ params, abortSignal }: { params: ${loaderParamsType}; abortSignal: AbortSignal }) =>`
     : `loader: ({ abortSignal }: { abortSignal: AbortSignal }) =>`;
 
-  return `  ${operation.operationId}Resource(${paramsArg}) {
+  return `  ${methodName}Resource(${paramsArg}) {
     return resource({
       ${paramsFactory}
       ${loaderSignature}
@@ -293,7 +327,11 @@ ${properties}
   } | undefined`;
 }
 
-function generateMutationMethod(operation: OperationModel, responseTypeHints: boolean): string {
+function generateMutationMethod(
+  operation: OperationModel,
+  methodName: string,
+  responseTypeHints: boolean,
+): string {
   const hasParams =
     operation.pathParams.length + operation.queryParams.length + operation.headerParams.length > 0;
   const paramsType = generateParamsType(operation);
@@ -338,7 +376,7 @@ function generateMutationMethod(operation: OperationModel, responseTypeHints: bo
   requestLines.push('signal');
   const requestBody = requestLines.map((line) => `      ${line}`).join('\n');
 
-  return `  ${operation.operationId}(${bodyParameter}${paramsParameter}signal?: AbortSignal): Promise<${operation.responseType}> {
+  return `  ${methodName}(${bodyParameter}${paramsParameter}signal?: AbortSignal): Promise<${operation.responseType}> {
     return this.client.request<${operation.responseType}>({
 ${requestBody}
     });
@@ -356,7 +394,7 @@ ${requestBody}
  * and only applies when `runtime.signalMutations` is enabled. The Promise-based
  * method remains available.
  */
-function generateSignalMutationMethod(operation: OperationModel): string {
+function generateSignalMutationMethod(operation: OperationModel, methodName: string): string {
   const hasParams =
     operation.pathParams.length + operation.queryParams.length + operation.headerParams.length > 0;
   const paramsType = generateParamsType(operation);
@@ -380,9 +418,9 @@ function generateSignalMutationMethod(operation: OperationModel): string {
   forwardedArgs.push('mutationSignal');
   const forwardedCall = forwardedArgs.join(', ');
 
-  return `  ${operation.operationId}Mutation(${paramsArg}): Mutation<${mutationBodyType}, ${operation.responseType}> {
+  return `  ${methodName}Mutation(${paramsArg}): Mutation<${mutationBodyType}, ${operation.responseType}> {
     return createMutation<${mutationBodyType}, ${operation.responseType}>((mutationBody, mutationSignal) =>
-      this.${operation.operationId}(${forwardedCall}),
+      this.${methodName}(${forwardedCall}),
     );
   }`;
 }
@@ -473,13 +511,30 @@ function generatePathExpression(operation: OperationModel): string {
     [...operation.pathParams, ...operation.queryParams, ...operation.headerParams].length > 0;
 
   if (!hasParams) {
-    return `'${operation.path}'`;
+    return JSON.stringify(operation.path);
   }
 
-  const templatePath = operation.path.replace(
-    /{([^}]+)}/g,
-    (_, name) => `\${encodeURIComponent(String(params.${name}))}`,
+  // Path templating: `{id}` → `params.id`. Parameter names are looked up in the
+  // model so names that are not valid identifiers (e.g. `{user-id}`) use bracket
+  // notation, and the result is encoded so the URL stays well-formed.
+  const byName = new Map(
+    [...operation.pathParams, ...operation.queryParams, ...operation.headerParams].map((param) => [
+      param.name,
+      param,
+    ]),
   );
+
+  const templatePath = operation.path.replace(/\{([^}]+)\}/g, (placeholder, name: string) => {
+    const param = byName.get(name);
+
+    if (!param) {
+      // Not a declared parameter — keep the literal placeholder instead of
+      // emitting a reference to a non-existent property.
+      return placeholder;
+    }
+
+    return `\${encodeURIComponent(String(${formatPropertyAccess('params', name)}))}`;
+  });
 
   return '`' + templatePath + '`';
 }
@@ -487,25 +542,16 @@ function generatePathExpression(operation: OperationModel): string {
 /**
  * Formats a parameter name for use as a TypeScript property name.
  *
- * Header parameters may contain hyphens (e.g. `X-Request-Id`), which are
- * not valid in unquoted TypeScript identifiers. Such names are quoted.
+ * Parameter names are free-form in OpenAPI (`X-Request-Id`, `filter[name]`,
+ * `user-id`), so any name that is not a valid identifier is quoted.
  */
 function formatParamName(param: ParameterModel): string {
-  if (param.location === 'header' && !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(param.name)) {
-    return `'${param.name}'`;
-  }
-  return param.name;
+  return formatPropertyName(param.name);
 }
 
-/**
- * Formats a parameter name for use in a template literal expression
- * (e.g. `params.${name}`). Header names with hyphens need bracket notation.
- */
+/** Formats a parameter access expression (`params.id` / `params['user-id']`). */
 function formatParamAccess(param: ParameterModel): string {
-  if (param.location === 'header' && !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(param.name)) {
-    return `params['${param.name}']`;
-  }
-  return `params.${param.name}`;
+  return formatPropertyAccess('params', param.name);
 }
 
 /**
@@ -528,12 +574,12 @@ function generateQueryExpression(operation: OperationModel): string {
       const isRuntimeDefault = !param.style && param.explode === undefined;
 
       if (isRuntimeDefault) {
-        return `            ${param.name}: ${formatParamAccess(param)}`;
+        return `            ${formatPropertyName(param.name)}: ${formatParamAccess(param)}`;
       }
 
       const style = param.style ?? DEFAULT_QUERY_STYLE;
       const explode = param.explode ?? DEFAULT_QUERY_EXPLODE;
-      return `            ${param.name}: { value: ${formatParamAccess(param)}, style: '${style}', explode: ${explode} }`;
+      return `            ${formatPropertyName(param.name)}: { value: ${formatParamAccess(param)}, style: '${style}', explode: ${explode} }`;
     })
     .join(',\n');
 
@@ -555,7 +601,7 @@ function generateHeaderExpression(operation: OperationModel, unwrapSignals = fal
     .map((param) => {
       const access = formatParamAccess(param);
       const value = unwrapSignals ? `readSignalOrValue(${access})` : access;
-      return `            '${param.name}': ${value}`;
+      return `            ${formatPropertyName(param.name)}: ${value}`;
     })
     .join(',\n');
 
@@ -573,7 +619,9 @@ function toParameterModel(
   // values win, otherwise the effective defaults (config override or
   // OpenAPI spec defaults) apply. The resolved values are captured in the
   // model so downstream generation sees the full effective serialization.
-  const style: QueryStyle = parameter.style ?? defaultQueryStyle;
+  const style: QueryStyle = isQueryStyle(parameter.style)
+    ? parameter.style
+    : defaultQueryStyle;
   const explode: boolean = parameter.explode ?? defaultQueryExplode;
   // Only query params are serialized via style/explode metadata.
   const isQuery = parameter.in === 'query';
@@ -590,7 +638,10 @@ function toParameterModel(
   };
 }
 
-function extractResponseType(operation: OpenApiOperation): {
+function extractResponseType(
+  operation: OpenApiOperation,
+  resolve: RefResolver,
+): {
   responseType: string;
   responseParser?: 'json' | 'text' | 'blob' | 'arrayBuffer' | 'stream';
 } {
@@ -604,8 +655,14 @@ function extractResponseType(operation: OpenApiOperation): {
   let found2xxWithoutSchema = false;
   let responseParser: 'json' | 'text' | 'blob' | 'arrayBuffer' | 'stream' | undefined;
 
-  for (const [statusCode, response] of Object.entries(responses)) {
+  for (const [statusCode, rawResponse] of Object.entries(responses)) {
     if (!isSuccessStatus(statusCode)) {
+      continue;
+    }
+
+    const response = resolve(rawResponse, 'responses');
+
+    if (!response) {
       continue;
     }
 
@@ -640,7 +697,10 @@ function extractResponseType(operation: OpenApiOperation): {
   // with the success schema (e.g. NestJS-generated specs), so without this the
   // generator would emit `void` even though a concrete DTO is defined.
   if (successSchemas.length === 0 && responses['default']) {
-    const {schema, contentType} = extractSchemaFromResponse(responses['default']);
+    const defaultResponse = resolve(responses['default'], 'responses');
+    const {schema, contentType} = defaultResponse
+      ? extractSchemaFromResponse(defaultResponse)
+      : {};
 
     if (schema && schema !== 'void') {
       successSchemas.push(schema);
@@ -775,10 +835,10 @@ function extractSchemaFromResponse(response: OpenApiResponse): {
  * captures part schemas for multipart bodies.
  */
 function extractRequestBody(
-  operation: OpenApiOperation,
+  requestBody: OpenApiRequestBody | undefined,
   preferContentType?: string,
 ): RequestBodyModel | undefined {
-  const content = operation.requestBody?.content;
+  const content = requestBody?.content;
   if (!content) {
     return undefined;
   }
@@ -865,13 +925,13 @@ function fallbackOperationId(method: HttpMethod, path: string): string {
     const paramMatch = segment.match(/^\{(.+)\}$/);
 
     if (paramMatch) {
-      nameParts.push('By', pascalCase(paramMatch[1]!));
+      nameParts.push('By', toPascalIdentifier(paramMatch[1]!, 'Param'));
     } else {
-      nameParts.push(pascalCase(segment));
+      nameParts.push(toPascalIdentifier(segment, 'Path'));
     }
   }
 
-  return camelCase(nameParts.join(''));
+  return toCamelIdentifier(nameParts.join(''), 'operation');
 }
 
 function methodVerbPrefix(method: HttpMethod): string {

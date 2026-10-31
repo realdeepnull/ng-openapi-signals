@@ -5,12 +5,19 @@ import {loadConfig, resolveConfig, validateConfig} from './config';
 import {buildCliConfig} from './cli-options';
 import {logger} from './logger';
 
+/**
+ * CLI version, injected at build time from `package.json` (see
+ * `tsdown.config.ts`) so the reported version can never drift from the
+ * published package.
+ */
+declare const __PKG_VERSION__: string | undefined;
+
 const program = new Command();
 
 program
   .name('ng-openapi-signals')
   .description('Signal-first OpenAPI client generator for Angular using resource() and fetch().')
-  .version('0.10.0');
+  .version(typeof __PKG_VERSION__ === 'string' ? __PKG_VERSION__ : '0.0.0');
 
 program
   .command('generate')
@@ -18,6 +25,9 @@ program
   .option('-i, --input <path>', 'Path to OpenAPI JSON/YAML file')
   .option('-o, --output <path>', 'Output directory')
   .option('-c, --config <path>', 'Path to config file (default: ng-openapi-signals.config.ts)')
+  // Left as a tri-state on purpose: passing neither flag must leave `clean`
+  // undefined so a `clean: false` in the config file stays in effect. The
+  // default (`true`) lives in `DEFAULT_CONFIG`.
   .option('--clean', 'Clean output directory before generation (default: true)')
   .option('--no-clean', 'Preserve existing files in output directory')
   .option('--group-by <mode>', 'Group APIs by tag or path (default: tag)')

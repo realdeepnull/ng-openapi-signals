@@ -7,6 +7,30 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+
+- **Invalid identifiers from the spec**: parameter names, `operationId`s and schema names are free-form in OpenAPI, but the generator emitted them verbatim. A path parameter `{user-id}`, a query parameter `filter[name]`, an `operationId: get-users` or a schema named `200Response` produced non-compiling TypeScript (and made `generate` crash inside Prettier). Names that are already valid identifiers are preserved verbatim — `operationId: UsersController_rangeUsers` still maps to `UsersController_rangeUsersResource`, so no public API is renamed. Only invalid names are quoted (properties) or sanitized (identifiers).
+- **`$ref` targets other than schemas were silently ignored**: reusable `components/parameters`, `components/requestBodies` and `components/responses` are still `$ref` objects after `SwaggerParser.bundle()`. Such operations lost all their parameters, request body and response type (returning `unknown`). They are now resolved before extraction.
+- **Empty compositions and enums**: `oneOf: [{}]`, `allOf: [{}, {}]` and `enum: []` emitted `export type X = ;`, which does not parse. They now degrade to `unknown` / `never`.
+- **`additionalProperties` next to `properties`**: the declared members were dropped, losing type information. The emitted type now keeps both (`{ id?: string } & Record<string, number>`), and `additionalProperties: false` yields a closed object instead of a bare `Record`.
+- **JSON Pointer escapes in `$ref`**: `#/components/schemas/A~1B` produced the type name `A~1B`; escapes are now decoded (`~1` → `/`, `~0` → `~`) and sanitized consistently with the model declarations.
+- **Name collisions produced invalid output**: duplicate `operationId`s emitted two methods with the same name, and tags that only differ in case (`User` / `user`) overwrote each other's file (case-insensitive file systems) while producing two identical barrel exports. Both are now deduplicated (`getUser` / `getUser2`, `user.api.ts` / `user2.api.ts`).
+- **`writeFiles({clean: true})` could delete the project**: a misconfigured `output` (`.`, `..`, a drive root) was removed recursively. The generator now refuses to clean a filesystem root or any directory containing the current working directory.
+- **`--clean` was never applied from the CLI**: the `--clean` / `--no-clean` pair left `clean` as `undefined` unless a flag was passed. `--clean` now defaults to `true` and `--no-clean` correctly yields `false`.
+- **`--version` reported a stale hard-coded version** (`0.10.0` while `package.json` was already `0.10.1`). The version is now injected at build time from `package.json` (`tsdown` `define`).
+- **Silently ignored invalid CLI values**: `--transport grpc` fell back to the file/default value, generating output the caller did not ask for. Invalid enum values and non-`true`/`false` `--default-query-explode` values now fail with a clear error.
+- **`--config` pointing to a missing file was silently ignored**; it now throws. CommonJS configs (`module.exports`) are loaded correctly (previously only `export default` worked).
+- **Relative `basePath` values crashed every request**: `new URL(path, '/api')` throws `Invalid URL`. Relative base paths (a dev-server proxy setup) now resolve against `document.baseURI`, and operation paths without a leading slash no longer append to the last base segment.
+- **Hard-coded `Accept: application/json`** broke non-JSON endpoints: servers may answer `text/*`, `image/*` or `text/event-stream` operations with 406. The header is now derived from the response type hint, keeping `application/json` as the default when no hint exists.
+- **Body-less status codes**: 205 and 304 were parsed as bodies (throwing in some runtimes); they now short-circuit to `undefined` like 204.
+- **`--check` performance**: generated files are now read in parallel instead of sequentially, and symlinks/special entries in the output directory are ignored rather than followed.
+
+### Added
+
+- **`codegen/document.ts`** — one permissive OpenAPI document shape shared by all codegen modules (previously three drifting copies) plus a `RefResolver` for `#/components/**` references.
+- **`codegen/guards.ts`** — the `GroupBy` / `HttpTransport` / `QueryStyle` type guards, so the pure codegen layer no longer has to import the CLI-facing `config.ts`.
+- **Tests**: `tests/robustness.test.ts` (+ fixtures `robustness.yml`, `duplicate-operation-ids.yml`, `duplicate-tags.yml`) covering identifier sanitizing, `$ref` resolution, invalid type shapes, name collisions and `writeFiles` safety.
+
 ### Changed
 
 - **Dependency updates**: `@apidevtools/swagger-parser` 13 (pulls JSON Schema Ref Parser 16 — ESM-only, RFC 6901 pointer encoding, prototype-pollution fix), `vitest` 5, `tsdown` 0.23, `publint` 0.3.25, plus minor bumps for `eslint`, `knip`, `globals`, `tsx`, `prettier`, `@types/node` and `typescript-eslint`. No API or generated-output changes.

@@ -12,6 +12,7 @@ import {
   DEFAULT_CONFIG,
   DEFAULT_RUNTIME_CONFIG,
 } from '../src/config.js';
+import {buildCliConfig} from '../src/cli-options.js';
 
 const TMP_DIR = join(process.cwd(), 'tests', '.tmp-config');
 
@@ -50,6 +51,22 @@ describe('config', () => {
       expect(config.output).toBe('./src/generated/api');
       expect(config.groupBy).toBe('path');
     });
+
+    it('loads a CommonJS config file (module.exports)', async () => {
+      const configPath = join(TMP_DIR, 'ng-openapi-signals.config.cjs');
+      await writeFile(configPath, `module.exports = {input: './cjs.json'};\n`, 'utf8');
+
+      const config = await loadConfig(configPath);
+      expect(config.input).toBe('./cjs.json');
+    });
+
+    it('throws when an explicitly requested config file does not exist', async () => {
+      // Silently ignoring a typo in --config would generate output from the
+      // wrong (or default) configuration.
+      await expect(loadConfig(join(TMP_DIR, 'missing.config.ts'))).rejects.toThrow(
+        /config file not found/,
+      );
+    });
   });
 
   describe('resolveConfig', () => {
@@ -72,6 +89,17 @@ describe('config', () => {
 
     it('CLI clean=false overrides file clean=true', () => {
       const config = resolveConfig({clean: false}, {clean: true});
+      expect(config.clean).toBe(false);
+    });
+
+    it('keeps a file-level clean:false when no clean flag is passed', () => {
+      // Regression guard: giving the commander `--clean` option a `.default(true)`
+      // would make `clean` always defined by the CLI and silently override the
+      // config file. The default belongs to DEFAULT_CONFIG only.
+      const cliConfig = buildCliConfig({});
+      expect(cliConfig.clean).toBeUndefined();
+
+      const config = resolveConfig(cliConfig, {clean: false});
       expect(config.clean).toBe(false);
     });
 

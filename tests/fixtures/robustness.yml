@@ -1,0 +1,66 @@
+openapi: 3.0.0
+info: {title: robustness fixture, version: "1.0"}
+components:
+  parameters:
+    Page:
+      name: page
+      in: query
+      schema: {type: integer}
+  requestBodies:
+    CreateUser:
+      content:
+        application/json:
+          schema:
+            type: object
+            properties: {name: {type: string}}
+  responses:
+    UserResponse:
+      description: ok
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/User'}
+  schemas:
+    User:
+      type: object
+      required: [id]
+      properties:
+        id: {type: string}
+        "user-name": {type: string}
+    "200Response":
+      type: object
+      properties: {ok: {type: boolean}}
+    Weird:
+      oneOf: [{}]
+    EmptyEnum:
+      type: string
+      enum: []
+    MapWithProps:
+      type: object
+      properties: {id: {type: string}}
+      additionalProperties: {type: number}
+paths:
+  /users/{user-id}:
+    get:
+      operationId: get-user
+      tags: [Probe]
+      parameters:
+        - name: user-id
+          in: path
+          required: true
+          schema: {type: string}
+        - $ref: '#/components/parameters/Page'
+        - name: filter[name]
+          in: query
+          schema: {type: string}
+      responses:
+        "200":
+          $ref: '#/components/responses/UserResponse'
+  /users:
+    post:
+      operationId: createUser
+      tags: [Probe]
+      requestBody:
+        $ref: '#/components/requestBodies/CreateUser'
+      responses:
+        "201":
+          $ref: '#/components/responses/UserResponse'

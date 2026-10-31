@@ -48,18 +48,17 @@ describe('buildCliConfig', () => {
     expect(config.groupBy).toBe('path');
   });
 
-  it('drops invalid enum values instead of promoting them', () => {
-    const config = resolveConfig(
-      buildCliConfig({
-        // Not a valid transport — must not override the file/default value.
-        transport: 'grpc' as string,
-        groupBy: 'cloud' as string,
-      }),
-      {runtime: {transport: 'fetch'}},
+  it('rejects invalid enum values instead of silently dropping them', () => {
+    // A typo such as `--transport grpc` must fail loudly: silently falling back
+    // to the file/default value would generate output the caller did not ask for.
+    expect(() => buildCliConfig({transport: 'grpc' as string})).toThrow(/--transport/);
+    expect(() => buildCliConfig({groupBy: 'cloud' as string})).toThrow(/--group-by/);
+    expect(() => buildCliConfig({defaultQueryStyle: 'matrix' as string})).toThrow(
+      /--default-query-style/,
     );
-
-    expect(config.runtime?.transport).toBe('fetch');
-    expect(config.groupBy).toBe('tag');
+    expect(() => buildCliConfig({defaultQueryExplode: 'yes'})).toThrow(
+      /--default-query-explode/,
+    );
   });
 
   it('omits the runtime key entirely when no runtime flag is given', () => {

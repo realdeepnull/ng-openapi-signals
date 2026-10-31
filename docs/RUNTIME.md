@@ -234,6 +234,38 @@ providers: [
 ];
 ```
 
+#### Absolute and relative base paths
+
+`basePath` may be absolute (`https://api.example.com/v1`), root-relative
+(`/api` — typical for a dev-server proxy) or empty. Relative values are
+resolved against `document.baseURI`, so the client never calls
+`new URL()` with a relative base (which throws `Invalid URL`). Operation
+paths are always resolved as root-relative, so `/users` replaces the base
+path instead of appending to its last segment.
+
+```ts
+// Proxy setup: `ng serve` forwards /api to the backend.
+provideNgOpenapiSignals({basePath: '/api'});
+
+// Same-origin requests.
+provideNgOpenapiSignals({basePath: ''});
+```
+
+#### `Accept` header
+
+The runtime sends an `Accept` header derived from the operation's response
+type hint, so non-JSON endpoints are not rejected with `406 Not Acceptable`:
+
+| `responseType` hint     | `Accept`            |
+| ----------------------- | ------------------- |
+| `'json'` (or absent)    | `application/json`  |
+| `'text'`                | `text/*`            |
+| `'stream'`              | `text/event-stream` |
+| `'blob'`/`'arrayBuffer'`| `*/*`               |
+
+Override it per request via `ApiRequestOptions.headers.Accept`, or globally
+via `defaultHeaders`.
+
 ### `MaybeSignal<T>`
 
 Generated resource methods support both plain values and Angular signals.

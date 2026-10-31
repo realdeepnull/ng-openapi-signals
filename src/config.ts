@@ -4,12 +4,10 @@ import {resolve} from 'node:path';
 import {createJiti} from 'jiti';
 import type {
   GeneratorConfig,
-  GroupBy,
-  HttpTransport,
   PartialGeneratorConfig,
-  QueryStyle,
   RuntimeConfig,
 } from './codegen/types';
+import {isQueryStyle} from './codegen/guards';
 
 export const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
   transport: 'fetch',
@@ -52,18 +50,33 @@ export function defineConfig(config: PartialGeneratorConfig): PartialGeneratorCo
  * Loads a config file (`ng-openapi-signals.config.ts`) from the given path
  * or from the current working directory.
  *
- * Returns an empty object if no config file is found.
+ * Returns an empty object if no config file is found. An explicitly requested
+ * config file (via `--config`) is required — silently ignoring a typo would
+ * generate output from the wrong (or default) configuration.
  */
 export async function loadConfig(configPath?: string): Promise<PartialGeneratorConfig> {
   const filePath = resolve(configPath ?? DEFAULT_CONFIG_FILE);
 
   if (!existsSync(filePath)) {
+    if (configPath !== undefined) {
+      throw new Error(
+        `Configuration error: config file not found at '${filePath}'. Check the --config path.`,
+      );
+    }
+
     return {};
   }
 
   const jiti = createJiti(import.meta.url);
-  const module = await jiti.import(pathToFileURL(filePath).href);
-  return (module as {default?: PartialGeneratorConfig}).default ?? {};
+  const module = await jiti.import(pathToFileURL(filePath).href, {default: true});
+
+  if (!module || typeof module !== 'object') {
+    throw new Error(
+      `Configuration error: '${filePath}' must export a config object (default export or CommonJS module.exports).`,
+    );
+  }
+
+  return module as PartialGeneratorConfig;
 }
 
 /**
@@ -81,7 +94,7 @@ export function resolveConfig(
     output: cliOptions.output ?? fileConfig.output ?? DEFAULT_CONFIG.output,
     clean: cliOptions.clean ?? fileConfig.clean ?? DEFAULT_CONFIG.clean,
     groupBy: cliOptions.groupBy ?? fileConfig.groupBy ?? DEFAULT_CONFIG.groupBy,
-    runtime: mergeRuntime(DEFAULT_CONFIG.runtime, fileConfig.runtime, cliOptions.runtime),
+    runtime: mergeRuntime(fileConfig.runtime, cliOptions.runtime),
   };
 }
 
@@ -89,17 +102,8 @@ export function resolveConfig(
  * Deep-merges runtime config layers: defaults < file < cli.
  * Object values are merged key-by-key; scalars use `??`.
  */
-function mergeRuntime(...layers: (RuntimeConfig | undefined)[]): RuntimeConfig {
-  const result: RuntimeConfig = {
-    transport: 'fetch',
-    defaultHeaders: {},
-    responseTypeHints: true,
-    defaultQueryStyle: 'form',
-    defaultQueryExplode: true,
-    preferContentType: 'application/json',
-    signalMutations: false,
-    dateTransformer: false,
-  };
+function mergeRuntime(...layers: (Partial<RuntimeConfig> | undefined)[]): RuntimeConfig {
+  const result: RuntimeConfig = {...DEFAULT_RUNTIME_CONFIG, defaultHeaders: {}};
 
   for (const layer of layers) {
     if (!layer) {
@@ -230,27 +234,7 @@ export function validateConfig(config: GeneratorConfig): void {
 }
 
 /**
- * Type guard for the `GroupBy` union.
+ * Type guards for the config unions, re-exported from the shared codegen
+ * module so existing imports (`from './config'`) keep working.
  */
-export function isGroupBy(value: unknown): value is GroupBy {
-  return value === 'tag' || value === 'path';
-}
-
-/**
- * Type guard for the `HttpTransport` union.
- */
-export function isTransport(value: unknown): value is HttpTransport {
-  return value === 'fetch' || value === 'httpClient';
-}
-
-/**
- * Type guard for the `QueryStyle` union.
- */
-export function isQueryStyle(value: unknown): value is QueryStyle {
-  return (
-    value === 'form' ||
-    value === 'spaceDelimited' ||
-    value === 'pipeDelimited' ||
-    value === 'deepObject'
-  );
-}
+export {isGroupBy, isQueryStyle, isTransport} from './codegen/guards';

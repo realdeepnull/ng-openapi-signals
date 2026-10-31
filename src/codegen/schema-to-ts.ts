@@ -1,4 +1,13 @@
 import type {OpenAPISchema} from '../openapi';
+import {formatPropertyName, typeNameFromRef} from './naming';
+
+/** Maps OpenAPI `type` values to TypeScript primitives. */
+const PRIMITIVE_TYPES: Record<string, string> = {
+  integer: 'number',
+  number: 'number',
+  boolean: 'boolean',
+  string: 'string',
+};
 
 /**
  * Convert an OpenAPI schema object to a TypeScript type string.
@@ -20,18 +29,20 @@ export function schemaToTsType(schema: OpenAPISchema | undefined): string {
 
   // Composition keywords take precedence when there is no `type` / `enum` / `$ref`.
   if (schema.allOf) {
-    const parts = schema.allOf.map((sub) => schemaToTsType(sub));
-    return withNullable(parts.filter((p: string) => p && p !== 'unknown').join(' & '), schema);
+    const parts = schema.allOf.map((sub) => schemaToTsType(sub)).filter(isKnownType);
+    // An empty composition (`allOf: [{}]`) must not emit an empty type — that
+    // produces `export type X = ;`, which does not parse.
+    return withNullable(parts.length > 0 ? parts.join(' & ') : 'unknown', schema);
   }
 
   if (schema.oneOf || schema.anyOf) {
     const subs = schema.oneOf ?? schema.anyOf ?? [];
-    const parts = subs.map((sub) => schemaToTsType(sub));
-    return withNullable(parts.filter((p: string) => p && p !== 'unknown').join(' | '), schema);
+    const parts = subs.map((sub) => schemaToTsType(sub)).filter(isKnownType);
+    return withNullable(parts.length > 0 ? parts.join(' | ') : 'unknown', schema);
   }
 
   if (schema.$ref) {
-    return withNullable(schema.$ref.split('/').pop() ?? 'unknown', schema);
+    return withNullable(typeNameFromRef(schema.$ref), schema);
   }
 
   if (Array.isArray(schema.type)) {
@@ -43,12 +54,13 @@ export function schemaToTsType(schema: OpenAPISchema | undefined): string {
       types.push('null');
     }
 
-    return Array.from(new Set(types)).join(' | ');
+    return Array.from(new Set(types)).join(' | ') || 'unknown';
   }
 
   if (schema.enum) {
+    // `enum: []` is invalid in OpenAPI but appears in the wild → `never`.
     return withNullable(
-      schema.enum.map((value: unknown) => JSON.stringify(value)).join(' | '),
+      schema.enum.map((value: unknown) => JSON.stringify(value)).join(' | ') || 'never',
       schema,
     );
   }
@@ -59,16 +71,12 @@ export function schemaToTsType(schema: OpenAPISchema | undefined): string {
 
     case 'integer':
     case 'number':
-      return withNullable('number', schema);
-
     case 'boolean':
-      return withNullable('boolean', schema);
-
     case 'string':
-      if (schema.format === 'binary') {
+      if (schema.type === 'string' && schema.format === 'binary') {
         return withNullable('Blob', schema);
       }
-      return withNullable('string', schema);
+      return withNullable(PRIMITIVE_TYPES[schema.type]!, schema);
 
     case 'object':
       return withNullable(objectToTsType(schema), schema);
@@ -81,6 +89,11 @@ export function schemaToTsType(schema: OpenAPISchema | undefined): string {
 
       return 'unknown';
   }
+}
+
+/** Whether a rendered type carries actual information. */
+function isKnownType(type: string): boolean {
+  return type !== '' && type !== 'unknown';
 }
 
 /**
@@ -139,25 +152,38 @@ function objectToTsType(schema: OpenAPISchema): string {
   const required = new Set<string>(schema.required ?? []);
   const propertyNames = Object.keys(properties);
 
-  // additionalProperties as a schema → Record<string, T>
-  if (schema.additionalProperties && typeof schema.additionalProperties === 'object') {
-    const valueType = schemaToTsType(schema.additionalProperties);
-    return `Record<string, ${valueType}>`;
+  // Build the declared members first: a schema may combine `properties` with
+  // `additionalProperties` (a typed map with known keys). Dropping the named
+  // members in favour of a bare `Record` would lose information.
+  const members = propertyNames
+    .map((name) => {
+      const optional = required.has(name) ? '' : '?';
+      const type = schemaToTsType(properties[name]);
+      return `${formatPropertyName(name)}${optional}: ${type}`;
+    })
+    .join('; ');
+
+  const additionalProperties = schema.additionalProperties;
+
+  // `additionalProperties: false` → closed object, only the declared members.
+  if (additionalProperties === false) {
+    return propertyNames.length === 0 ? 'Record<string, never>' : `{ ${members} }`;
+  }
+
+  if (additionalProperties && typeof additionalProperties === 'object') {
+    const valueType = schemaToTsType(additionalProperties);
+    const record = `Record<string, ${valueType}>`;
+
+    // Index signatures must encompass the declared property types; combining
+    // both is unsound for heterogeneous objects, so a pure map (no declared
+    // properties) stays a plain `Record`.
+    return propertyNames.length === 0 ? record : `{ ${members} } & ${record}`;
   }
 
   // No properties and additionalProperties: true (or unspecified) → open record
   if (propertyNames.length === 0) {
     return 'Record<string, unknown>';
   }
-
-  // Build an inline object type literal
-  const members = propertyNames
-    .map((name) => {
-      const optional = required.has(name) ? '' : '?';
-      const type = schemaToTsType(properties[name]);
-      return `${name}${optional}: ${type}`;
-    })
-    .join('; ');
 
   return `{ ${members} }`;
 }

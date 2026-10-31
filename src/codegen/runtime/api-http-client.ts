@@ -1,5 +1,43 @@
 import type {GeneratorConfig} from '../types';
 
+/**
+ * Derives the `Accept` header from the operation's response type hint.
+ *
+ * A JSON-only Accept header makes servers return 406 (or a JSON error
+ * document) for endpoints declared as text, image or event-stream in the
+ * spec. Falls back to a wildcard when the parser is unknown, letting the
+ * server pick.
+ */
+const ACCEPT_HELPERS = `function acceptForResponseType(
+  responseType?: 'json' | 'text' | 'blob' | 'arrayBuffer' | 'stream',
+): string {
+  switch (responseType) {
+    case 'text':
+      return 'text/*';
+    case 'blob':
+    case 'arrayBuffer':
+      return '*/*';
+    case 'stream':
+      return 'text/event-stream';
+    case 'json':
+    default:
+      // No hint (responseTypeHints disabled) keeps the historical default.
+      return 'application/json';
+  }
+}
+
+/**
+ * Whether an HTTP status code can legally carry a response body.
+ *
+ * 204, 205 and 304 are body-less per RFC 9110; Angular reports \`null\` for
+ * them and some servers send a stray \`Content-Length\`, so they
+ * short-circuit to \`undefined\`.
+ */
+function hasResponseBody(status: number): boolean {
+  return status !== 204 && status !== 205 && status !== 304;
+}
+`;
+
 export function generateApiHttpClient(config: GeneratorConfig): string {
   const responseTypeHints = config.runtime?.responseTypeHints ?? true;
   const dateTransformer = config.runtime?.dateTransformer === true;
@@ -34,6 +72,7 @@ export interface QueryParamOptions {
   explode: boolean;
 }
 
+${ACCEPT_HELPERS}
 export interface ApiRequestOptions {
   method: string;
   path: string;
@@ -74,7 +113,7 @@ export class ApiHttpClient {
     const { body, contentType } = this.prepareBody(options);
 
     const headers: Record<string, string> = {
-      Accept: 'application/json',
+      Accept: acceptForResponseType(options.responseType),
       ...this.defaultHeaders,
       ...authHeaders,
       ...(contentType ? { 'Content-Type': contentType } : {}),
@@ -143,7 +182,7 @@ export class ApiHttpClient {
         await this.onResponse(response);
       }
 
-      if (response.status === 204) {
+      if (!hasResponseBody(response.status)) {
         return undefined as unknown as T;
       }
 
@@ -249,8 +288,19 @@ export class ApiHttpClient {
     }
   }
 
+  /**
+   * Builds the request URL from the configured base path and the operation
+   * path.
+   *
+   * new URL(path, base) requires an absolute base. Relative base paths
+   * (e.g. /api for a dev-server proxy) are common, so they are resolved
+   * against the current document base. A path without a leading slash would
+   * otherwise be appended to the last base segment instead of replacing it.
+   */
   private buildUrl(path: string, query?: Record<string, unknown | QueryParamOptions>): string {
-    const url = new URL(path, this.baseUrl);
+    const normalizedPath = path.startsWith('/') ? path : '/' + path;
+    const base = this.baseUrl || (typeof document === 'undefined' ? '/' : document.baseURI);
+    const url = new URL(normalizedPath, base);
 
     for (const [key, raw] of Object.entries(query ?? {})) {
       if (raw === undefined || raw === null) {

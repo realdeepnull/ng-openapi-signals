@@ -1,0 +1,21 @@
+openapi: 3.0.0
+info: {title: duplicate operationIds, version: "1.0"}
+paths:
+  /a:
+    get:
+      operationId: getUser
+      tags: [Duplicates]
+      responses:
+        "200": {description: ok, content: {application/json: {schema: {type: string}}}}
+  /b:
+    get:
+      operationId: getUser
+      tags: [Duplicates]
+      responses:
+        "200": {description: ok, content: {application/json: {schema: {type: number}}}}
+  /c:
+    post:
+      operationId: getUser
+      tags: [Duplicates]
+      responses:
+        "201": {description: created, content: {application/json: {schema: {type: boolean}}}}

@@ -1,44 +1,11 @@
-import {pascalCase} from './naming';
+import {pascalCase, toPascalIdentifier} from './naming';
 import type {OpenAPISchema} from '../openapi';
-
-/** Permissive OpenAPI document shape — only the fields we walk. */
-interface OpenApiDocument {
-  components?: {
-    schemas?: Record<string, OpenAPISchema>;
-  };
-  paths?: Record<string, OpenApiPathItem>;
-}
-
-/** A single path item (collection of operations + path-level parameters). */
-interface OpenApiPathItem {
-  get?: OpenApiOperation;
-  post?: OpenApiOperation;
-  put?: OpenApiOperation;
-  patch?: OpenApiOperation;
-  delete?: OpenApiOperation;
-  head?: OpenApiOperation;
-  options?: OpenApiOperation;
-  parameters?: OpenApiParameter[];
-}
+import type {OpenApiDocument} from './document';
+import {isReference} from './document';
 
 /** HTTP methods that map to operations on a path item. */
 type HttpMethod = 'get' | 'post' | 'put' | 'patch' | 'delete' | 'head' | 'options';
 
-/** An operation (e.g. GET /users). */
-interface OpenApiOperation {
-  operationId?: string;
-  parameters?: OpenApiParameter[];
-  requestBody?: {content?: Record<string, {schema?: OpenAPISchema}>};
-  responses?: Record<string, {content?: Record<string, {schema?: OpenAPISchema}>}>;
-}
-
-/** A parameter (path/query/header/cookie). */
-interface OpenApiParameter {
-  name: string;
-  in: 'path' | 'query' | 'header' | 'cookie';
-  required?: boolean;
-  schema?: OpenAPISchema;
-}
 
 /**
  * Walks an OpenAPI document and hoists anonymous object schemas into
@@ -70,10 +37,10 @@ export function hoistInlineSchemas(api: OpenApiDocument): void {
   const schemaRegistry = api.components.schemas;
 
   function registerName(base: string): string {
-    let name = pascalCase(base);
-    if (!name) {
-      name = 'InlineSchema';
-    }
+    // Hints are synthesized by the generator (`getUserByIdResponse`,
+    // `UserAddress`), so they are always converted to PascalCase; only names
+    // authored in the spec keep their spelling.
+    const name = toPascalIdentifier(base, 'InlineSchema');
 
     let candidate = name;
     let counter = 2;
@@ -226,14 +193,15 @@ export function hoistInlineSchemas(api: OpenApiDocument): void {
 
       // Parameters
       for (const param of operation.parameters ?? []) {
-        if (param.schema) {
+        if (!isReference(param) && param.schema) {
           param.schema = hoist(param.schema, `${operationId}${pascalCase(param.name)}`);
         }
       }
 
       // Request body
-      if (operation.requestBody?.content) {
-        for (const content of Object.values(operation.requestBody.content)) {
+      const requestBody = operation.requestBody;
+      if (requestBody && !isReference(requestBody) && requestBody.content) {
+        for (const content of Object.values(requestBody.content)) {
           if (content.schema) {
             content.schema = hoist(content.schema, `${operationId}Request`);
           }
@@ -242,11 +210,13 @@ export function hoistInlineSchemas(api: OpenApiDocument): void {
 
       // Responses
       for (const response of Object.values(operation.responses ?? {})) {
-        if (response.content) {
-          for (const content of Object.values(response.content)) {
-            if (content.schema) {
-              content.schema = hoist(content.schema, `${operationId}Response`);
-            }
+        if (isReference(response) || !response.content) {
+          continue;
+        }
+
+        for (const content of Object.values(response.content)) {
+          if (content.schema) {
+            content.schema = hoist(content.schema, `${operationId}Response`);
           }
         }
       }
@@ -254,7 +224,7 @@ export function hoistInlineSchemas(api: OpenApiDocument): void {
 
     // Path-level parameters
     for (const param of item.parameters ?? []) {
-      if (param.schema) {
+      if (!isReference(param) && param.schema) {
         const hint = `${pathGroupName(path)}${pascalCase(param.name)}`;
         param.schema = hoist(param.schema, hint);
       }
@@ -264,11 +234,12 @@ export function hoistInlineSchemas(api: OpenApiDocument): void {
 
 function pathGroupName(path: string): string {
   const segments = path.split('/').filter(Boolean);
-  return pascalCase(segments[0] ?? 'Default');
+  // Derived from a URL segment, not authored in the spec → PascalCase.
+  return toPascalIdentifier(segments[0] ?? 'Default', 'Default');
 }
 
 function fallbackOperationName(method: string, path: string): string {
   const segments = path.split('/').filter(Boolean);
   const parts = segments.map((seg) => seg.replace(/[{}]/g, ''));
-  return `${method}${parts.map((p) => pascalCase(p)).join('')}`;
+  return `${method}${parts.map((part) => pascalCase(part)).join('')}`;
 }

@@ -1,20 +1,30 @@
 import type {SchemaModel} from './types';
-import {kebabCase} from './naming';
+import {
+  formatPropertyName,
+  kebabCase,
+  sanitizeTypeName,
+  uniqueFileName,
+  uniqueIdentifier,
+} from './naming';
 import {schemaToTsType} from './schema-to-ts';
+import type {OpenApiDocument} from './document';
 import type {OpenAPISchema} from '../openapi';
-
-/** Permissive OpenAPI document shape — only the fields we read. */
-interface OpenApiDocument {
-  components?: {
-    schemas?: Record<string, OpenAPISchema>;
-  };
-}
 
 export function extractSchemas(api: OpenApiDocument): SchemaModel[] {
   const schemas = api.components?.schemas ?? {};
 
+  // Schema names are free-form and may not be valid identifiers (`200Response`,
+  // `foo/bar`). Sanitize consistently so the emitted declaration, the file
+  // name and every `$ref`-derived type name agree. Distinct keys can normalize
+  // to the same identifier (`A/B` and `A B`), which would emit two declarations
+  // with the same name — deduplicate them.
+  const usedNames = new Set<string>();
+
   return Object.entries(schemas).map(([name, schema]) => {
-    return extractSchemaModel(name, schema);
+    return extractSchemaModel(
+      uniqueIdentifier(sanitizeTypeName(name, 'InlineSchema'), usedNames),
+      schema,
+    );
   });
 }
 
@@ -105,25 +115,34 @@ function extractSchemaModel(name: string, schema: OpenAPISchema): SchemaModel {
 export function generateModelFiles(schemas: SchemaModel[]): Record<string, string> {
   const files: Record<string, string> = {};
   const schemaNames = new Set(schemas.map((s) => s.name));
+  const usedFileNames = new Set<string>();
+  const exports: string[] = [];
 
   for (const schema of schemas) {
+    // Sanitized names can collide (`User` / `user` → both `user`) and file
+    // systems are case-insensitive. Deduplicate rather than silently
+    // overwriting a previously generated model file.
+    const fileName = uniqueFileName(kebabCase(schema.name), usedFileNames, 'model');
+
     if (schema.kind === 'enum') {
-      files[`models/${kebabCase(schema.name)}.ts`] = generateEnumType(schema, schemaNames);
+      files[`models/${fileName}.ts`] = generateEnumType(schema, schemaNames);
     } else if (schema.kind === 'alias') {
-      files[`models/${kebabCase(schema.name)}.ts`] = generateAliasType(schema, schemaNames);
+      files[`models/${fileName}.ts`] = generateAliasType(schema, schemaNames);
     } else {
-      files[`models/${kebabCase(schema.name)}.ts`] = generateInterface(schema, schemaNames);
+      files[`models/${fileName}.ts`] = generateInterface(schema, schemaNames);
     }
+
+    exports.push(`export * from './${fileName}';`);
   }
 
-  files['models/index.ts'] =
-    schemas.map((schema) => `export * from './${kebabCase(schema.name)}';`).join('\n') + '\n';
+  files['models/index.ts'] = exports.join('\n') + '\n';
 
   return files;
 }
 
 function generateEnumType(schema: SchemaModel, allSchemaNames: Set<string>): string {
-  const values = (schema.values ?? []).map((v) => JSON.stringify(v)).join(' | ');
+  // An empty `enum: []` would emit `export type X = ;` — invalid TypeScript.
+  const values = (schema.values ?? []).map((v) => JSON.stringify(v)).join(' | ') || 'never';
   const imports = collectModelImportsForType(values, allSchemaNames, schema.name);
 
   return `${imports}export type ${schema.name} = ${values};
@@ -131,7 +150,7 @@ function generateEnumType(schema: SchemaModel, allSchemaNames: Set<string>): str
 }
 
 function generateAliasType(schema: SchemaModel, allSchemaNames: Set<string>): string {
-  const aliasType = schema.aliasType ?? 'unknown';
+  const aliasType = schema.aliasType || 'unknown';
   const imports = collectModelImportsForType(aliasType, allSchemaNames, schema.name);
 
   return `${imports}export type ${schema.name} = ${aliasType};
@@ -142,7 +161,7 @@ function generateInterface(schema: SchemaModel, allSchemaNames: Set<string>): st
   const properties = schema.properties
     .map((property) => {
       const optional = property.required ? '' : '?';
-      return `  ${property.name}${optional}: ${property.type};`;
+      return `  ${formatPropertyName(property.name)}${optional}: ${property.type};`;
     })
     .join('\n');
 

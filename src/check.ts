@@ -1,4 +1,4 @@
-import {readFile, readdir, stat} from 'node:fs/promises';
+import {readFile, readdir} from 'node:fs/promises';
 import type {Dirent} from 'node:fs';
 import {join} from 'node:path';
 import {generateFiles, formatFiles} from './generate';
@@ -35,22 +35,34 @@ export async function checkFiles(config: GeneratorConfig): Promise<CheckResult> 
   const generatedNames = new Set(Object.keys(generated));
   const diskSet = new Set(diskFiles);
 
+  // Read in parallel: sequential reads on a large generated tree dominate the
+  // runtime of `--check` in CI.
+  const comparisons = await Promise.all(
+    Object.keys(generated).map(async (fileName) => {
+      if (!diskSet.has(fileName)) {
+        return {fileName, state: 'missing' as const};
+      }
+
+      const onDisk = await readFile(join(config.output, fileName), 'utf8');
+
+      return {
+        fileName,
+        state: onDisk === generated[fileName] ? ('matched' as const) : ('outdated' as const),
+      };
+    }),
+  );
+
   const matched: string[] = [];
   const outdated: string[] = [];
   const missing: string[] = [];
 
-  for (const fileName of Object.keys(generated)) {
-    if (!diskSet.has(fileName)) {
-      missing.push(fileName);
-      continue;
-    }
-
-    const onDisk = await readFile(join(config.output, fileName), 'utf8');
-
-    if (onDisk === generated[fileName]) {
+  for (const {fileName, state} of comparisons) {
+    if (state === 'matched') {
       matched.push(fileName);
-    } else {
+    } else if (state === 'outdated') {
       outdated.push(fileName);
+    } else {
+      missing.push(fileName);
     }
   }
 
@@ -64,27 +76,27 @@ async function listFiles(dir: string): Promise<string[]> {
   let entries: Dirent[];
 
   try {
-    await stat(dir);
     entries = await readdir(dir, {withFileTypes: true});
   } catch {
+    // Missing directory, permission error, or a file instead of a directory:
+    // there is nothing to compare against.
     return [];
   }
 
-  const files: string[] = [];
+  const files = await Promise.all(
+    entries.map(async (entry) => {
+      const fullPath = join(dir, entry.name);
 
-  for (const entry of entries) {
-    const fullPath = join(dir, entry.name);
-
-    if (entry.isDirectory()) {
-      const nested = await listFiles(fullPath);
-
-      for (const nestedFile of nested) {
-        files.push(`${entry.name}/${nestedFile}`);
+      if (entry.isDirectory()) {
+        const nested = await listFiles(fullPath);
+        return nested.map((nestedFile) => `${entry.name}/${nestedFile}`);
       }
-    } else {
-      files.push(entry.name);
-    }
-  }
 
-  return files;
+      // Symlinks and other special entries are not generated files; reading
+      // them could fail or escape the output directory.
+      return entry.isFile() ? [entry.name] : [];
+    }),
+  );
+
+  return files.flat();
 }
