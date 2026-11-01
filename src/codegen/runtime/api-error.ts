@@ -153,7 +153,7 @@ export class ApiError extends Error {
 }
 
 export async function toApiError(response: Response): Promise<ApiError> {
-  let body: unknown = null;
+  let body: unknown;
 
   try {
     const contentType = response.headers.get('content-type');

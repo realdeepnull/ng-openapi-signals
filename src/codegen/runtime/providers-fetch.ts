@@ -30,7 +30,7 @@ export const NG_OPENAPI_SIGNALS_BASE_PATH = new InjectionToken<string>('NG_OPENA
  * \`provideNgOpenapiSignals({ middleware: [...] })\` is flattened into the same
  * multi-provider stream, preserving registration order.
  */
-export const NG_OPENAPI_SIGNALS_MIDDLEWARE = new InjectionToken<ReadonlyArray<ApiMiddlewareEntry>>(
+export const NG_OPENAPI_SIGNALS_MIDDLEWARE = new InjectionToken<readonly ApiMiddlewareEntry[]>(
   'NG_OPENAPI_SIGNALS_MIDDLEWARE',
   {
     factory: () => [],
@@ -145,7 +145,7 @@ export interface NgOpenapiSignalsOptions {
    * { provide: NG_OPENAPI_SIGNALS_MIDDLEWARE, multi: true, useClass: MyMiddleware }
    * \`\`\`
    */
-  middleware?: ReadonlyArray<ApiMiddlewareFn>;
+  middleware?: readonly ApiMiddlewareFn[];
   auth?: ApiAuthHook;
   defaultHeaders?: Record<string, string>;
   errorMapper?: ApiErrorMapper;
@@ -153,7 +153,7 @@ export interface NgOpenapiSignalsOptions {
   onResponse?: ApiResponseHook;
 }
 
-function middlewareProviders(middleware?: ReadonlyArray<ApiMiddlewareFn>): Provider[] {
+function middlewareProviders(middleware?: readonly ApiMiddlewareFn[]): Provider[] {
   return (middleware ?? []).map((mw) => ({
     provide: NG_OPENAPI_SIGNALS_MIDDLEWARE,
     multi: true,
