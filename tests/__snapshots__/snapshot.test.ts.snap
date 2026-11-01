@@ -113,7 +113,7 @@ export class ApiError extends Error {
 }
 
 export async function toApiError(response: Response): Promise<ApiError> {
-  let body: unknown = null;
+  let body: unknown;
 
   try {
     const contentType = response.headers.get('content-type');
@@ -858,7 +858,7 @@ export const NG_OPENAPI_SIGNALS_BASE_PATH = new InjectionToken<string>(
  * multi-provider stream, preserving registration order.
  */
 export const NG_OPENAPI_SIGNALS_MIDDLEWARE = new InjectionToken<
-  ReadonlyArray<ApiMiddlewareEntry>
+  readonly ApiMiddlewareEntry[]
 >('NG_OPENAPI_SIGNALS_MIDDLEWARE', {
   factory: () => []
 });
@@ -978,7 +978,7 @@ export interface NgOpenapiSignalsOptions {
    * { provide: NG_OPENAPI_SIGNALS_MIDDLEWARE, multi: true, useClass: MyMiddleware }
    * \`\`\`
    */
-  middleware?: ReadonlyArray<ApiMiddlewareFn>;
+  middleware?: readonly ApiMiddlewareFn[];
   auth?: ApiAuthHook;
   defaultHeaders?: Record<string, string>;
   errorMapper?: ApiErrorMapper;
@@ -987,7 +987,7 @@ export interface NgOpenapiSignalsOptions {
 }
 
 function middlewareProviders(
-  middleware?: ReadonlyArray<ApiMiddlewareFn>
+  middleware?: readonly ApiMiddlewareFn[]
 ): Provider[] {
   return (middleware ?? []).map((mw) => ({
     provide: NG_OPENAPI_SIGNALS_MIDDLEWARE,

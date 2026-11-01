@@ -1,6 +1,6 @@
 {
   "name": "ng-openapi-signals",
-  "version": "0.10.2",
+  "version": "0.10.3",
   "description": "Signal-first OpenAPI client generator for Angular using resource() and fetch().",
   "type": "module",
   "bin": {

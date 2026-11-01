@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-11-01
+
+### Fixed
+
+- **Lint errors in the generated fetch runtime**: middleware types now emit `readonly T[]` instead of `ReadonlyArray<T>` (semantically identical, but the generated `providers.ts` changes), and `toApiError()` no longer initializes its `body` variable with a needless `null`.
+
 ## [0.10.2] - 2026-10-31
 
 ### Fixed
