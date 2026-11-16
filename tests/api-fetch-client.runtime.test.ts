@@ -217,6 +217,85 @@ describe('generated ApiFetchClient (runtime via DI)', () => {
       expect(url).toContain('tags=b');
       expect(url).not.toContain('tags=a%2Cb');
     });
+
+    // Objects are legal for `form` (the OpenAPI default) and for the delimited
+    // styles. They used to fall through to `String(value)` → `[object Object]`.
+    // These exercise the *generated* runtime, so a template regression is caught
+    // even if the hand-mirrored unit tests drift.
+    it('serializes a form object with explode:true as one param per property', async () => {
+      const fetchMock = mockFetch(jsonResponse({}));
+      vi.stubGlobal('fetch', fetchMock);
+      const client = createClient();
+
+      const opts: QueryParamOptions = {
+        value: {R: 100, G: 200, B: 150},
+        style: 'form',
+        explode: true,
+      };
+      await client.request({method: 'GET', path: '/search', query: {color: opts}});
+
+      const url = getFetchCall(fetchMock).url;
+      expect(url).toContain('R=100');
+      expect(url).toContain('G=200');
+      expect(url).toContain('B=150');
+      expect(url).not.toContain('Object');
+    });
+
+    it('serializes a form object with explode:false as key/value pairs', async () => {
+      const fetchMock = mockFetch(jsonResponse({}));
+      vi.stubGlobal('fetch', fetchMock);
+      const client = createClient();
+
+      const opts: QueryParamOptions = {
+        value: {R: 100, G: 200, B: 150},
+        style: 'form',
+        explode: false,
+      };
+      await client.request({method: 'GET', path: '/search', query: {shade: opts}});
+
+      const url = getFetchCall(fetchMock).url;
+      expect(url).toContain('shade=R%2C100%2CG%2C200%2CB%2C150');
+      expect(url).not.toContain('Object');
+    });
+
+    it('serializes spaceDelimited and pipeDelimited objects', async () => {
+      const fetchMock = vi
+        .fn()
+        .mockImplementation(async () => jsonResponse({})) as unknown as typeof fetch;
+      vi.stubGlobal('fetch', fetchMock);
+      const client = createClient();
+
+      await client.request({
+        method: 'GET',
+        path: '/search',
+        query: {spaced: {value: {R: 100, G: 200}, style: 'spaceDelimited', explode: false}},
+      });
+      expect(getFetchCall(fetchMock).url).toContain('spaced=R+100+G+200');
+
+      await client.request({
+        method: 'GET',
+        path: '/search',
+        query: {piped: {value: {R: 100, G: 200}, style: 'pipeDelimited', explode: false}},
+      });
+      expect(getFetchCall(fetchMock, 1).url).toContain('piped=R%7C100%7CG%7C200');
+    });
+
+    it('serializes deepObject object properties', async () => {
+      const fetchMock = mockFetch(jsonResponse({}));
+      vi.stubGlobal('fetch', fetchMock);
+      const client = createClient();
+
+      const opts: QueryParamOptions = {
+        value: {R: 100, G: 200},
+        style: 'deepObject',
+        explode: true,
+      };
+      await client.request({method: 'GET', path: '/search', query: {color: opts}});
+
+      const url = getFetchCall(fetchMock).url;
+      expect(url).toContain('color%5BR%5D=100');
+      expect(url).toContain('color%5BG%5D=200');
+    });
   });
 
   describe('response parsing', () => {

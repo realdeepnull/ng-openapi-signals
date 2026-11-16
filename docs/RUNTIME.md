@@ -360,14 +360,17 @@ query: {
 }
 ```
 
-The runtime `buildUrl` method serializes according to the style:
+The runtime `buildUrl` method serializes according to the style. Arrays and
+objects are flattened per the OpenAPI 3.0.3 style table:
 
-| Style            | `explode: true`     | `explode: false`  |
-| ---------------- | ------------------- | ----------------- |
-| `form`           | `key=val1&key=val2` | `key=val1,val2`   |
-| `spaceDelimited` | `key=val1&key=val2` | `key=val1%20val2` |
-| `pipeDelimited`  | `key=val1&key=val2` | `key=val1\|val2`  |
-| `deepObject`     | `key[prop]=val`     | —                 |
+| Style            | `explode: true`                      | `explode: false`                     |
+| ---------------- | ------------------------------------ | ------------------------------------ |
+| `form`           | `key=val1&key=val2` / `R=100&G=200`  | `key=val1,val2` / `color=R,100,G,200` |
+| `spaceDelimited` | `key=val1&key=val2` / `R=100&G=200`  | `key=val1%20val2` / `color=R%20100%20G%20200` |
+| `pipeDelimited`  | `key=val1&key=val2` / `R=100&G=200`  | `key=val1\|val2` / `color=R\|100\|G\|200` |
+| `deepObject`     | `key[prop]=val`                      | `key[prop]=val` (always exploded)    |
+
+Object properties resolving to `undefined` or `null` are omitted.
 
 ### Multipart Form Data
 

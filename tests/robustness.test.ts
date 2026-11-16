@@ -69,6 +69,76 @@ describe('identifier sanitizing', () => {
 
     expect(files['models/user.ts']).toContain("'user-name'?: string;");
   });
+
+  it('renames schema names that are reserved words', async () => {
+    const files = await formatFiles(
+      await generateFiles({
+        ...BASE_CONFIG,
+        input: 'tests/fixtures/reserved-schema-names.yml',
+      }),
+    );
+
+    const modelFiles = Object.entries(files).filter(([name]) => name.startsWith('models/'));
+
+    // Reserved words cannot name a declaration, so they are PascalCased.
+    expect(modelFiles.some(([, c]) => c.includes('export interface Default {'))).toBe(true);
+    expect(modelFiles.some(([, c]) => c.includes('export interface Class {'))).toBe(true);
+    expect(modelFiles.some(([, c]) => c.includes('export type Enum ='))).toBe(true);
+    expect(modelFiles.some(([, c]) => c.includes('export type As ='))).toBe(true);
+
+    // The original reserved word must never appear as a declaration name —
+    // Prettier would throw and the output would not compile.
+    for (const [, content] of modelFiles) {
+      expect(content).not.toMatch(/^export (interface|type) (default|class|enum|as|new) /m);
+    }
+  });
+
+  it('resolves $refs to renamed reserved-word schemas', async () => {
+    const files = await formatFiles(
+      await generateFiles({
+        ...BASE_CONFIG,
+        input: 'tests/fixtures/reserved-schema-names.yml',
+      }),
+    );
+
+    // The response `$ref` and the nested property reference must both point at
+    // the renamed declaration, not at a name that no longer exists.
+    expect(files['resources/default.api.ts']).toContain('request<Default>');
+    expect(files['models/new.ts']).toContain('ref?: Default;');
+  });
+
+  it('keeps reserved words usable as property and member names', async () => {
+    const files = await formatFiles(
+      await generateFiles({
+        ...BASE_CONFIG,
+        input: 'tests/fixtures/reserved-schema-names.yml',
+      }),
+    );
+
+    const api = files['resources/default.api.ts']!;
+
+    // `default` as a *parameter* is legal TypeScript and must not be renamed.
+    expect(api).toContain('default?: MaybeSignal<string>');
+    expect(api).toContain('params.default');
+  });
+
+  it('resolves a $ref whose sanitized name collides with a literal key', async () => {
+    const files = await formatFiles(
+      await generateFiles({
+        ...BASE_CONFIG,
+        input: 'tests/fixtures/schema-name-collision.yml',
+      }),
+    );
+
+    // `200Response` sanitizes to `_200Response`, which is already taken by a
+    // literal key → declarations are `_200Response` / `_200Response2`.
+    expect(files['models/200response.ts']).toContain('export interface _200Response {');
+    expect(files['models/200response2.ts']).toContain('export interface _200Response2 {');
+
+    // The reference must bind to the *renamed* declaration. Re-deriving the
+    // name from the pointer would silently select `_200Response` (wrong type).
+    expect(files['resources/default.api.ts']).toContain('request<_200Response2>');
+  });
 });
 
 describe('$ref resolution in operations', () => {

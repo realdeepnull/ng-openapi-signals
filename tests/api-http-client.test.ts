@@ -115,6 +115,10 @@ interface ClientDeps {
   http: {request: (...args: unknown[]) => unknown};
 }
 
+function separatorFor(style: 'form' | 'spaceDelimited' | 'pipeDelimited' | 'deepObject'): string {
+  return style === 'spaceDelimited' ? ' ' : style === 'pipeDelimited' ? '|' : ',';
+}
+
 function appendQueryParam(
   url: URL,
   key: string,
@@ -128,20 +132,38 @@ function appendQueryParam(
         url.searchParams.append(key, String(item));
       }
     } else {
-      const sep = style === 'spaceDelimited' ? ' ' : style === 'pipeDelimited' ? '|' : ',';
-      url.searchParams.set(key, value.map((v) => String(v)).join(sep));
+      url.searchParams.set(key, value.map((v) => String(v)).join(separatorFor(style)));
     }
-  } else if (typeof value === 'object' && value !== null && style === 'deepObject' && explode) {
-    for (const [prop, val] of Object.entries(value)) {
-      if (val !== undefined && val !== null) {
+    return;
+  }
+
+  if (typeof value === 'object' && value !== null) {
+    const entries = Object.entries(value).filter(([, val]) => val !== undefined && val !== null);
+
+    if (style === 'deepObject') {
+      for (const [prop, val] of entries) {
         url.searchParams.append(`${key}[${prop}]`, String(val));
       }
+      return;
     }
-  } else {
-    url.searchParams.set(key, String(value));
-  }
-}
 
+    if (explode) {
+      for (const [prop, val] of entries) {
+        url.searchParams.append(prop, String(val));
+      }
+      return;
+    }
+
+    const sep = separatorFor(style);
+    url.searchParams.set(
+      key,
+      entries.map(([prop, val]) => `${prop}${sep}${String(val)}`).join(sep),
+    );
+    return;
+  }
+
+  url.searchParams.set(key, String(value));
+}
 function buildUrl(
   baseUrl: string,
   path: string,
@@ -604,6 +626,48 @@ describe('ApiHttpClient request logic', () => {
       });
       expect(url).toContain('filters%5Bstatus%5D=active');
       expect(url).toContain('filters%5Brole%5D=admin');
+    });
+
+    // Object params are legal for `form` (the OpenAPI default style) and for the
+    // delimited styles; before this was handled they serialized as
+    // `[object Object]`. Expected values follow the OAS 3.0.3 style table.
+    it('serializes a form object with explode:true as one param per property', () => {
+      const url = buildUrl(baseUrl, '/search', {
+        color: {value: {R: 100, G: 200, B: 150}, style: 'form', explode: true},
+      });
+      expect(url).toContain('?R=100&G=200&B=150');
+      expect(url).not.toContain('Object');
+    });
+
+    it('serializes a form object with explode:false as key/value pairs', () => {
+      const url = buildUrl(baseUrl, '/search', {
+        color: {value: {R: 100, G: 200, B: 150}, style: 'form', explode: false},
+      });
+      expect(url).toContain('color=R%2C100%2CG%2C200%2CB%2C150');
+    });
+
+    it('serializes a form object passed as a plain value (default explode:true)', () => {
+      const url = buildUrl(baseUrl, '/search', {color: {R: 100, G: 200}});
+      expect(url).toContain('?R=100&G=200');
+    });
+
+    it('serializes spaceDelimited and pipeDelimited objects', () => {
+      const spaced = buildUrl(baseUrl, '/search', {
+        color: {value: {R: 100, G: 200}, style: 'spaceDelimited', explode: false},
+      });
+      expect(spaced).toContain('color=R+100+G+200');
+
+      const piped = buildUrl(baseUrl, '/search', {
+        color: {value: {R: 100, G: 200}, style: 'pipeDelimited', explode: false},
+      });
+      expect(piped).toContain('color=R%7C100%7CG%7C200');
+    });
+
+    it('serializes a deepObject regardless of explode', () => {
+      const notExploded = buildUrl(baseUrl, '/search', {
+        color: {value: {R: 100, G: 200}, style: 'deepObject', explode: false},
+      });
+      expect(notExploded).toContain('color%5BR%5D=100');
     });
   });
 

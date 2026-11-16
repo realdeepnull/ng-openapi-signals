@@ -19,7 +19,7 @@ import {
 } from './naming';
 import {schemaToTsType} from './schema-to-ts';
 import {isQueryStyle} from './guards';
-import {sanitizeIdentifier} from './naming';
+import {sanitizeIdentifier, type ModelNames} from './naming';
 import type {
   OpenApiDocument,
   OpenApiOperation,
@@ -40,6 +40,7 @@ const DEFAULT_QUERY_EXPLODE = true;
 export function extractOperations(
   api: OpenApiDocument,
   config?: Pick<GeneratorConfig, 'runtime'>,
+  names?: ModelNames,
 ): OperationModel[] {
   // Effective query serialization defaults: config override or OpenAPI defaults.
   const runtime = config?.runtime;
@@ -83,21 +84,28 @@ export function extractOperations(
 
       const pathParams = parameters
         .filter((parameter) => parameter.in === 'path')
-        .map((parameter) => toParameterModel(parameter, defaultQueryStyle, defaultQueryExplode));
+        .map((parameter) =>
+          toParameterModel(parameter, defaultQueryStyle, defaultQueryExplode, names),
+        );
 
       const queryParams = parameters
         .filter((parameter) => parameter.in === 'query')
-        .map((parameter) => toParameterModel(parameter, defaultQueryStyle, defaultQueryExplode));
+        .map((parameter) =>
+          toParameterModel(parameter, defaultQueryStyle, defaultQueryExplode, names),
+        );
 
       const headerParams = parameters
         .filter((parameter) => parameter.in === 'header')
-        .map((parameter) => toParameterModel(parameter, defaultQueryStyle, defaultQueryExplode));
+        .map((parameter) =>
+          toParameterModel(parameter, defaultQueryStyle, defaultQueryExplode, names),
+        );
 
       const requestBody = extractRequestBody(
         resolve(operation.requestBody, 'requestBodies'),
         runtime?.preferContentType,
+        names,
       );
-      const {responseType, responseParser} = extractResponseType(operation, resolve);
+      const {responseType, responseParser} = extractResponseType(operation, resolve, names);
 
       operations.push({
         operationId: sanitizeIdentifier(
@@ -614,6 +622,7 @@ function toParameterModel(
   parameter: OpenApiParameter,
   defaultQueryStyle: QueryStyle = DEFAULT_QUERY_STYLE,
   defaultQueryExplode: boolean = DEFAULT_QUERY_EXPLODE,
+  names?: ModelNames,
 ): ParameterModel {
   // Resolve the effective style/explode for query params: explicit spec
   // values win, otherwise the effective defaults (config override or
@@ -630,7 +639,7 @@ function toParameterModel(
     name: parameter.name,
     location: parameter.in as ParameterModel['location'],
     required: Boolean(parameter.required),
-    type: schemaToTsType(parameter.schema),
+    type: schemaToTsType(parameter.schema, names),
     ...(isQuery && style !== DEFAULT_QUERY_STYLE
       ? {style}
       : {}),
@@ -641,6 +650,7 @@ function toParameterModel(
 function extractResponseType(
   operation: OpenApiOperation,
   resolve: RefResolver,
+  names?: ModelNames,
 ): {
   responseType: string;
   responseParser?: 'json' | 'text' | 'blob' | 'arrayBuffer' | 'stream';
@@ -666,7 +676,7 @@ function extractResponseType(
       continue;
     }
 
-    const {schema, contentType} = extractSchemaFromResponse(response);
+    const {schema, contentType} = extractSchemaFromResponse(response, names);
 
     // 204 No Content → void; skip adding to the union.
     if (statusCode === '204') {
@@ -699,7 +709,7 @@ function extractResponseType(
   if (successSchemas.length === 0 && responses['default']) {
     const defaultResponse = resolve(responses['default'], 'responses');
     const {schema, contentType} = defaultResponse
-      ? extractSchemaFromResponse(defaultResponse)
+      ? extractSchemaFromResponse(defaultResponse, names)
       : {};
 
     if (schema && schema !== 'void') {
@@ -790,7 +800,10 @@ function isSuccessStatus(statusCode: string): boolean {
   return false;
 }
 
-function extractSchemaFromResponse(response: OpenApiResponse): {
+function extractSchemaFromResponse(
+  response: OpenApiResponse,
+  names?: ModelNames,
+): {
   schema?: string;
   contentType?: string;
 } {
@@ -820,7 +833,7 @@ function extractSchemaFromResponse(response: OpenApiResponse): {
     return {contentType};
   }
 
-  return {schema: schemaToTsType(schema), contentType};
+  return {schema: schemaToTsType(schema, names), contentType};
 }
 
 /**
@@ -837,6 +850,7 @@ function extractSchemaFromResponse(response: OpenApiResponse): {
 function extractRequestBody(
   requestBody: OpenApiRequestBody | undefined,
   preferContentType?: string,
+  names?: ModelNames,
 ): RequestBodyModel | undefined {
   const content = requestBody?.content;
   if (!content) {
@@ -878,13 +892,13 @@ function extractRequestBody(
     const required = new Set<string>(schema.required ?? []);
     parts = Object.entries(schema.properties).map(([name, propSchema]) => ({
       name,
-      type: schemaToTsType(propSchema),
+      type: schemaToTsType(propSchema, names),
       required: required.has(name),
     }));
   }
 
   return {
-    type: schemaToTsType(schema),
+    type: schemaToTsType(schema, names),
     contentType,
     isMultipart,
     isFormUrlencoded,

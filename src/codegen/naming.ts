@@ -1,9 +1,89 @@
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const LEADING_DIGIT = /^[0-9]/;
 
+/**
+ * Words that cannot name a type declaration.
+ *
+ * Component keys are legal OpenAPI (`^[a-zA-Z0-9\.\-_]+$`), so `default` is a
+ * valid schema name — but `export interface default {}` is a parse error, and
+ * `export type as = string` fails as well.
+ *
+ * These words stay valid as *property* and *member* names (`params.default`,
+ * `{default?: string}` both compile), so this set is deliberately not folded
+ * into {@link isIdentifier}: only declaration-level sanitizers consult it.
+ */
+const RESERVED_TYPE_NAMES = new Set([
+  'break',
+  'case',
+  'catch',
+  'class',
+  'const',
+  'continue',
+  'debugger',
+  'default',
+  'delete',
+  'do',
+  'else',
+  'enum',
+  'export',
+  'extends',
+  'false',
+  'finally',
+  'for',
+  'function',
+  'if',
+  'import',
+  'in',
+  'instanceof',
+  'new',
+  'null',
+  'return',
+  'super',
+  'switch',
+  'this',
+  'throw',
+  'true',
+  'try',
+  'typeof',
+  'var',
+  'void',
+  'while',
+  'with',
+  // A valid interface name, but `export type as = …` does not parse.
+  'as',
+]);
+
 /** Whether `value` is a valid, unquoted TypeScript identifier. */
 export function isIdentifier(value: string): boolean {
   return IDENTIFIER.test(value);
+}
+
+/** Whether `value` is a reserved word and therefore unusable as a type name. */
+export function isReservedTypeName(value: string): boolean {
+  return RESERVED_TYPE_NAMES.has(value);
+}
+
+/**
+ * Schema key → emitted type name mapping.
+ *
+ * Sanitizing and de-duplicating names happens once, in
+ * {@link buildModelNames}; every `$ref` is then resolved through the same map.
+ * Re-deriving the name from the reference would bypass de-duplication and
+ * silently bind a `$ref` to the wrong declaration (`200Response` resolving to
+ * `_200Response` when both `_200Response` and `200Response` exist).
+ */
+export type ModelNames = ReadonlyMap<string, string>;
+
+/** Builds the schema-key → type-name map for a document's `components.schemas`. */
+export function buildModelNames(schemaKeys: Iterable<string>): ModelNames {
+  const used = new Set<string>();
+  const names = new Map<string, string>();
+
+  for (const key of schemaKeys) {
+    names.set(key, uniqueIdentifier(sanitizeTypeName(key, 'InlineSchema'), used));
+  }
+
+  return names;
 }
 
 export function pascalCase(value: string): string {
@@ -84,23 +164,30 @@ export function sanitizeIdentifier(value: string, fallback = 'generated'): strin
 /**
  * Same contract as {@link sanitizeIdentifier}, using `PascalCase` for the
  * fallback — used for type names, where PascalCase is conventional.
+ *
+ * Reserved words are renamed as well: they pass the identifier regex but
+ * cannot name a declaration (`default` → `Default`, `as` → `As`).
  */
 export function sanitizeTypeName(value: string, fallback = 'Generated'): string {
-  return isIdentifier(value) ? value : toPascalIdentifier(value, fallback);
+  if (isIdentifier(value) && !isReservedTypeName(value)) {
+    return value;
+  }
+  return toPascalIdentifier(value, fallback);
 }
 
 /**
  * Resolves a local JSON Pointer `$ref` (e.g. `#/components/schemas/User`) to a
  * TypeScript type name.
  *
- * JSON Pointer escapes (`~1` → `/`, `~0` → `~`) are decoded, and the resulting
- * name is sanitized by the same rule as `extractSchemas`, so `$ref`-derived
- * type names always match the generated declarations.
+ * JSON Pointer escapes (`~1` → `/`, `~0` → `~`) are decoded. When the target
+ * document's {@link ModelNames} map is supplied the name is looked up there, so
+ * the reference always matches the generated declaration — including names
+ * that were renamed (reserved words) or de-duplicated (`200Response`).
  */
-export function typeNameFromRef(ref: string): string {
+export function typeNameFromRef(ref: string, names?: ModelNames): string {
   const segment = ref.split('/').pop() ?? '';
   const decoded = segment.replace(/~1/g, '/').replace(/~0/g, '~');
-  return sanitizeTypeName(decoded, 'InlineSchema');
+  return names?.get(decoded) ?? sanitizeTypeName(decoded, 'InlineSchema');
 }
 
 /**

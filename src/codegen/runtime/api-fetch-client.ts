@@ -363,13 +363,18 @@ export class ApiFetchClient {
   /**
    * Appends a query parameter using the specified OpenAPI style/explode.
    *
-   * - form + explode:true  → key=val1&key=val2 (repeated keys)
-   * - form + explode:false → key=val1,val2 (comma-separated)
-   * - spaceDelimited + explode:false → key=val1%20val2
-   * - spaceDelimited + explode:true  → key=val1&key=val2
-   * - pipeDelimited + explode:false  → key=val1|val2
-   * - pipeDelimited + explode:true   → key=val1&key=val2
-   * - deepObject (explode:true only)  → key[prop]=val
+   * Arrays and objects are both flattened per the OpenAPI 3.0.3 style table:
+   *
+   * - form + explode:true  → key=val1&key=val2  /  R=100&G=200 (one key per prop)
+   * - form + explode:false → key=val1,val2      /  color=R,100,G,200
+   * - spaceDelimited + explode:false → key=val1%20val2 / color=R%20100%20G%20200
+   * - spaceDelimited + explode:true  → key=val1&key=val2 / R=100&G=200
+   * - pipeDelimited + explode:false  → key=val1|val2 / color=R|100|G|200
+   * - pipeDelimited + explode:true   → key=val1&key=val2 / R=100&G=200
+   * - deepObject → key[prop]=val (always exploded)
+   *
+   * Objects previously fell through to \`String(value)\` and serialized as
+   * \`[object Object]\` for every style except deepObject.
    */
   private appendQueryParam(
     url: URL,
@@ -384,18 +389,55 @@ export class ApiFetchClient {
           url.searchParams.append(key, String(item));
         }
       } else {
-        const sep = style === 'spaceDelimited' ? ' ' : style === 'pipeDelimited' ? '|' : ',';
-        url.searchParams.set(key, value.map((v) => String(v)).join(sep));
+        url.searchParams.set(key, this.joinValues(value, style));
       }
-    } else if (typeof value === 'object' && value !== null && style === 'deepObject' && explode) {
-      for (const [prop, val] of Object.entries(value)) {
-        if (val !== undefined && val !== null) {
+      return;
+    }
+
+    if (typeof value === 'object' && value !== null) {
+      const entries = Object.entries(value).filter(
+        ([, val]) => val !== undefined && val !== null,
+      );
+
+      // deepObject is keyed by definition (\`color[R]=100\`), regardless of explode.
+      if (style === 'deepObject') {
+        for (const [prop, val] of entries) {
           url.searchParams.append(\`\${key}[\${prop}]\`, String(val));
         }
+        return;
       }
-    } else {
-      url.searchParams.set(key, String(value));
+
+      if (explode) {
+        // form + explode:true — each property becomes its own parameter.
+        for (const [prop, val] of entries) {
+          url.searchParams.append(prop, String(val));
+        }
+        return;
+      }
+
+      url.searchParams.set(
+        key,
+        entries.map(([prop, val]) => \`\${prop}\${this.separatorFor(style)}\${String(val)}\`).join(
+          this.separatorFor(style),
+        ),
+      );
+      return;
     }
+
+    url.searchParams.set(key, String(value));
+  }
+
+  /** Separator used by the non-exploded delimited styles. */
+  private separatorFor(style: 'form' | 'spaceDelimited' | 'pipeDelimited' | 'deepObject'): string {
+    return style === 'spaceDelimited' ? ' ' : style === 'pipeDelimited' ? '|' : ',';
+  }
+
+  /** Joins an array with the separator of the requested style. */
+  private joinValues(
+    values: unknown[],
+    style: 'form' | 'spaceDelimited' | 'pipeDelimited' | 'deepObject',
+  ): string {
+    return values.map((v) => String(v)).join(this.separatorFor(style));
   }
 }
 `;

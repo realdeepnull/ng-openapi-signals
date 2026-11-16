@@ -1,5 +1,5 @@
 import type {OpenAPISchema} from '../openapi';
-import {formatPropertyName, typeNameFromRef} from './naming';
+import {formatPropertyName, typeNameFromRef, type ModelNames} from './naming';
 
 /** Maps OpenAPI `type` values to TypeScript primitives. */
 const PRIMITIVE_TYPES: Record<string, string> = {
@@ -21,15 +21,20 @@ const PRIMITIVE_TYPES: Record<string, string> = {
  * - inline anonymous object schemas → inline TS object type literal
  * - `prefixItems` (OpenAPI 3.1) → tuple types
  * - arrays, primitives
+ *
+ * `names` is the document's schema-key → type-name map (see
+ * {@link ModelNames}); it keeps `$ref` output identical to the emitted
+ * declarations. Omit it only when rendering schema fragments that cannot
+ * contain `$ref`s.
  */
-export function schemaToTsType(schema: OpenAPISchema | undefined): string {
+export function schemaToTsType(schema: OpenAPISchema | undefined, names?: ModelNames): string {
   if (!schema) {
     return 'unknown';
   }
 
   // Composition keywords take precedence when there is no `type` / `enum` / `$ref`.
   if (schema.allOf) {
-    const parts = schema.allOf.map((sub) => schemaToTsType(sub)).filter(isKnownType);
+    const parts = schema.allOf.map((sub) => schemaToTsType(sub, names)).filter(isKnownType);
     // An empty composition (`allOf: [{}]`) must not emit an empty type — that
     // produces `export type X = ;`, which does not parse.
     return withNullable(parts.length > 0 ? parts.join(' & ') : 'unknown', schema);
@@ -37,18 +42,18 @@ export function schemaToTsType(schema: OpenAPISchema | undefined): string {
 
   if (schema.oneOf || schema.anyOf) {
     const subs = schema.oneOf ?? schema.anyOf ?? [];
-    const parts = subs.map((sub) => schemaToTsType(sub)).filter(isKnownType);
+    const parts = subs.map((sub) => schemaToTsType(sub, names)).filter(isKnownType);
     return withNullable(parts.length > 0 ? parts.join(' | ') : 'unknown', schema);
   }
 
   if (schema.$ref) {
-    return withNullable(typeNameFromRef(schema.$ref), schema);
+    return withNullable(typeNameFromRef(schema.$ref, names), schema);
   }
 
   if (Array.isArray(schema.type)) {
     const types = schema.type
       .filter((type: string) => type !== 'null')
-      .map((type: string) => schemaToTsType({...schema, type}));
+      .map((type: string) => schemaToTsType({...schema, type}, names));
 
     if (schema.type.includes('null')) {
       types.push('null');
@@ -67,7 +72,7 @@ export function schemaToTsType(schema: OpenAPISchema | undefined): string {
 
   switch (schema.type) {
     case 'array':
-      return withNullable(arrayToTsType(schema), schema);
+      return withNullable(arrayToTsType(schema, names), schema);
 
     case 'integer':
     case 'number':
@@ -79,12 +84,12 @@ export function schemaToTsType(schema: OpenAPISchema | undefined): string {
       return withNullable(PRIMITIVE_TYPES[schema.type]!, schema);
 
     case 'object':
-      return withNullable(objectToTsType(schema), schema);
+      return withNullable(objectToTsType(schema, names), schema);
 
     default:
       // No explicit type — try to infer from keywords.
       if (schema.properties || schema.additionalProperties) {
-        return withNullable(objectToTsType(schema), schema);
+        return withNullable(objectToTsType(schema, names), schema);
       }
 
       return 'unknown';
@@ -125,13 +130,13 @@ function withNullable(type: string, schema: OpenAPISchema): string {
  * - `items` as a single schema → `T[]`
  * - `prefixItems` (OpenAPI 3.1) → tuple `[A, B, C]`
  */
-function arrayToTsType(schema: OpenAPISchema): string {
+function arrayToTsType(schema: OpenAPISchema, names?: ModelNames): string {
   if (schema.prefixItems) {
-    const tuple = schema.prefixItems.map((sub) => schemaToTsType(sub)).join(', ');
+    const tuple = schema.prefixItems.map((sub) => schemaToTsType(sub, names)).join(', ');
     return `[${tuple}]`;
   }
 
-  const inner = schemaToTsType(schema.items);
+  const inner = schemaToTsType(schema.items, names);
   // Wrap unions/intersections in parentheses so `[]` binds to the whole type,
   // not just the last member (e.g. `('A' | 'B' | 'C')[]` instead of `'A' | 'B' | 'C'[]`).
   const wrapped = / \| | & /.test(inner) && !inner.startsWith('(') ? `(${inner})` : inner;
@@ -147,7 +152,7 @@ function arrayToTsType(schema: OpenAPISchema): string {
  * - `additionalProperties: true` → `Record<string, unknown>`
  * - empty object → `Record<string, unknown>`
  */
-function objectToTsType(schema: OpenAPISchema): string {
+function objectToTsType(schema: OpenAPISchema, names?: ModelNames): string {
   const properties = schema.properties ?? {};
   const required = new Set<string>(schema.required ?? []);
   const propertyNames = Object.keys(properties);
@@ -158,7 +163,7 @@ function objectToTsType(schema: OpenAPISchema): string {
   const members = propertyNames
     .map((name) => {
       const optional = required.has(name) ? '' : '?';
-      const type = schemaToTsType(properties[name]);
+      const type = schemaToTsType(properties[name], names);
       return `${formatPropertyName(name)}${optional}: ${type}`;
     })
     .join('; ');
@@ -171,7 +176,7 @@ function objectToTsType(schema: OpenAPISchema): string {
   }
 
   if (additionalProperties && typeof additionalProperties === 'object') {
-    const valueType = schemaToTsType(additionalProperties);
+    const valueType = schemaToTsType(additionalProperties, names);
     const record = `Record<string, ${valueType}>`;
 
     // Index signatures must encompass the declared property types; combining

@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+
+- **Reserved-word schema names aborted generation**: `components.schemas` keys are legal OpenAPI (`^[a-zA-Z0-9\.\-_]+$`), so `default`, `class`, `enum`, `new` and friends are valid schema names — but `export interface default {}` is a parse error. Prettier threw while formatting the generated file, so `generate` (and `--check`) exited 1 without writing anything. Such names are now renamed the same way as any other invalid identifier (`default` → `Default`, `as` → `As`). Reserved words remain valid as *property* and *member* names (`params.default`, `{default?: string}`), so only declaration names are affected.
+- **`$ref` could bind to the wrong model**: sanitized names were de-duplicated per declaration (`200Response` → `_200Response2` when `_200Response` already exists), but `typeNameFromRef()` re-derived the name from the pointer and returned `_200Response` — silently selecting the wrong type. Schema names are now resolved once via `buildModelNames()` and every `$ref` goes through that map.
+- **Object query parameters serialized as `[object Object]`**: `appendQueryParam()` only handled objects for `deepObject` with `explode: true`; every other combination fell through to `String(value)`. `form` (the OpenAPI default style) with `explode: true` now emits one parameter per property (`?R=100&G=200`), `explode: false` emits `key=R,100,G,200`, and `spaceDelimited` / `pipeDelimited` / `deepObject` objects are handled as well — in both the `fetch` and `httpClient` runtimes. `null`/`undefined` object properties are omitted.
+
 ## [0.10.3] - 2026-11-01
 
 ### Fixed

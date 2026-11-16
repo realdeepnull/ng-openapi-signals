@@ -1,34 +1,30 @@
 import type {SchemaModel} from './types';
 import {
+  buildModelNames,
   formatPropertyName,
   kebabCase,
-  sanitizeTypeName,
   uniqueFileName,
-  uniqueIdentifier,
+  type ModelNames,
 } from './naming';
 import {schemaToTsType} from './schema-to-ts';
 import type {OpenApiDocument} from './document';
 import type {OpenAPISchema} from '../openapi';
 
-export function extractSchemas(api: OpenApiDocument): SchemaModel[] {
+export function extractSchemas(api: OpenApiDocument, names?: ModelNames): SchemaModel[] {
   const schemas = api.components?.schemas ?? {};
 
-  // Schema names are free-form and may not be valid identifiers (`200Response`,
-  // `foo/bar`). Sanitize consistently so the emitted declaration, the file
-  // name and every `$ref`-derived type name agree. Distinct keys can normalize
-  // to the same identifier (`A/B` and `A B`), which would emit two declarations
-  // with the same name — deduplicate them.
-  const usedNames = new Set<string>();
+  // Schema names are free-form and may not be valid identifiers (`200Response`),
+  // reserved words (`default`) or may normalize to the same identifier
+  // (`A/B` and `A B`). The names are resolved once by `buildModelNames` so the
+  // emitted declaration, the file name and every `$ref`-derived type name agree.
+  const resolved = names ?? buildModelNames(Object.keys(schemas));
 
   return Object.entries(schemas).map(([name, schema]) => {
-    return extractSchemaModel(
-      uniqueIdentifier(sanitizeTypeName(name, 'InlineSchema'), usedNames),
-      schema,
-    );
+    return extractSchemaModel(resolved.get(name)!, schema, resolved);
   });
 }
 
-function extractSchemaModel(name: string, schema: OpenAPISchema): SchemaModel {
+function extractSchemaModel(name: string, schema: OpenAPISchema, names: ModelNames): SchemaModel {
   // Enum schema → named union type
   if (schema.enum) {
     const enumNames = schema['x-enumNames'] ?? schema['x-enum-varnames'];
@@ -47,7 +43,7 @@ function extractSchemaModel(name: string, schema: OpenAPISchema): SchemaModel {
       name,
       kind: 'alias',
       properties: [],
-      aliasType: schemaToTsType(schema),
+      aliasType: schemaToTsType(schema, names),
     };
   }
 
@@ -57,7 +53,7 @@ function extractSchemaModel(name: string, schema: OpenAPISchema): SchemaModel {
       name,
       kind: 'alias',
       properties: [],
-      aliasType: schemaToTsType(schema),
+      aliasType: schemaToTsType(schema, names),
     };
   }
 
@@ -76,7 +72,7 @@ function extractSchemaModel(name: string, schema: OpenAPISchema): SchemaModel {
       name,
       kind: 'alias',
       properties: [],
-      aliasType: schemaToTsType(schema),
+      aliasType: schemaToTsType(schema, names),
     };
   }
 
@@ -106,7 +102,7 @@ function extractSchemaModel(name: string, schema: OpenAPISchema): SchemaModel {
     kind: 'interface',
     properties: Object.entries(properties).map(([propertyName, propertySchema]) => ({
       name: propertyName,
-      type: schemaToTsType(propertySchema),
+      type: schemaToTsType(propertySchema, names),
       required: required.has(propertyName),
     })),
   };

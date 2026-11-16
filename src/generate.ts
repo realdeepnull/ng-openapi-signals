@@ -8,6 +8,7 @@ import {extractSchemas, generateModelFiles} from './codegen/generate-models';
 import {extractOperations, generateApiFiles} from './codegen/generate-api';
 import {generateRuntimeFiles} from './codegen/generate-runtime';
 import {hoistInlineSchemas} from './codegen/inline-schemas';
+import {buildModelNames} from './codegen/naming';
 
 /** Ensures `config.runtime` is present, defaulting missing fields. */
 function withRuntimeDefaults(config: GeneratorConfig): GeneratorConfig {
@@ -37,8 +38,14 @@ export async function generateFiles(config: GeneratorConfig): Promise<Record<str
 
   hoistInlineSchemas(doc);
 
-  const schemas = extractSchemas(doc);
-  const operations = extractOperations(doc, normalizedConfig);
+  // Resolve schema keys to emitted type names once. Both the declarations and
+  // every `$ref` go through this map, so a renamed (`default` → `Default`) or
+  // de-duplicated (`200Response`) schema is referenced consistently instead of
+  // being re-derived — which could bind a `$ref` to the wrong declaration.
+  const names = buildModelNames(Object.keys(doc.components?.schemas ?? {}));
+
+  const schemas = extractSchemas(doc, names);
+  const operations = extractOperations(doc, normalizedConfig, names);
 
   return {
     ...generateRuntimeFiles(normalizedConfig),

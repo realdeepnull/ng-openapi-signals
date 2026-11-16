@@ -1,0 +1,39 @@
+openapi: 3.0.3
+info: {title: reserved schema names fixture, version: '1.0'}
+components:
+  schemas:
+    # Component keys are legal OpenAPI (`^[a-zA-Z0-9\.\-_]+$`) but `default`,
+    # `class` and `enum` are reserved TypeScript words. `as` is additionally
+    # unusable as a type alias name.
+    default:
+      type: object
+      properties:
+        x: {type: string}
+    class:
+      type: object
+      properties:
+        x: {type: string}
+    enum:
+      type: string
+      enum: [a, b]
+    as:
+      type: string
+    new:
+      type: object
+      properties:
+        ref: {$ref: '#/components/schemas/default'}
+paths:
+  /items:
+    get:
+      operationId: listItems
+      parameters:
+        # Property and member names may stay reserved words — they are legal.
+        - name: default
+          in: query
+          schema: {type: string}
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/default'}

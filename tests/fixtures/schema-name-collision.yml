@@ -1,0 +1,26 @@
+openapi: 3.0.3
+info: {title: schema name collision fixture, version: '1.0'}
+components:
+  schemas:
+    # `200Response` sanitizes to `_200Response`, which collides with the
+    # literal `_200Response` key. The declarations are de-duplicated
+    # (`_200Response`, `_200Response2`); the `$ref` below must resolve to the
+    # renamed declaration rather than back to `_200Response`.
+    _200Response:
+      type: object
+      properties:
+        fromLiteral: {type: string}
+    200Response:
+      type: object
+      properties:
+        fromSanitized: {type: string}
+paths:
+  /items:
+    get:
+      operationId: listItems
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/200Response'}
