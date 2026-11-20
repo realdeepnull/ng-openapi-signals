@@ -1,8 +1,10 @@
 node_modules
 dist
+*.tgz
 examples/generated
 AGENTS.md
 openapi-signals.config.ts
 swagger.yaml
 docs/PUBLISHING.md
+docs/local-installation.md
 .github/agents

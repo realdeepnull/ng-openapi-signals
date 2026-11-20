@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.10.4] - 2026-11-20
+
 ### Fixed
 
 #### Spec names that collide with generated code
@@ -66,7 +68,7 @@ A tag-derived class name (`Users` → `UsersApi`) and a schema with the same nam
 ### Added
 
 - **`ApiError.retryAfterSeconds`** — parses the `Retry-After` header (seconds or HTTP date) for 429 retry loops.
-- **`ApiNetworkError`** — new error type for network-level failures (`status: 0`), see *Fixed* above.
+- **`ApiNetworkError`** — new error type for network-level failures (`status: 0`), see _Fixed_ above.
 - **`timeoutMs`** in `provideNgOpenapiSignals()` — aborts requests that hang (`0` = unbounded, the previous behaviour). The `fetch` transport uses `AbortSignal.timeout()`, the `httpClient` transport Angular's native `timeout` option. Timeouts reject with a `TimeoutError` that is not wrapped in `ApiError`, so they stay distinguishable from network failures.
 - **`--fail-on-stale`** — opt-in for `--check` to exit 1 when files on disk are no longer produced by the spec. The default stays tolerant.
 - **`.gitattributes`** with `* text=auto eol=lf`, so checkouts stay LF.
@@ -75,6 +77,9 @@ A tag-derived class name (`Users` → `UsersApi`) and a schema with the same nam
 
 - **Schema types may be renamed** for specs whose names previously produced a package that did not compile — see [Spec names that collide with generated code](#spec-names-that-collide-with-generated-code). Names that already compiled are unchanged.
 - **CI verifies the example with `--check`** instead of `git diff --exit-code examples/generated`, which could never fail because the directory is git-ignored. The example now also matches the project's Prettier config.
+- **Documentation is split into topic pages** under [`docs/`](./docs) — CLI, configuration, transport, runtime configuration, middleware, errors, request/response topics, model names and architecture — while the README keeps the overview and a documentation index.
+- **Dependency updates**: `commander` 15.1, `prettier` 3.10, `eslint` 10.15, `typescript-eslint` 8.73, `vitest` 5.1, `tsdown` 0.23.7, `knip` 6.47, `globals` 17.14. `@apidevtools/swagger-parser` stays at 13, so Node.js 22.19 remains the minimum. No API or generated-output changes.
+- **CI actions** `actions/checkout` and `actions/setup-node` are bumped to v7.
 
 ### Tests
 
