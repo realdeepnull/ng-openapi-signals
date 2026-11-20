@@ -5,8 +5,9 @@ layer and the code generator fit together, which invariants the generated
 output guarantees, and where to add code.
 
 For behaviour of the *generated* client (runtime API, middleware, error
-types), see [RUNTIME.md](./RUNTIME.md). For usage and configuration, see the
-[README](../README.md).
+types), see [RUNTIME.md](./RUNTIME.md). For usage, CLI flags and configuration,
+see the [README](../README.md), [CLI.md](./CLI.md) and
+[CONFIGURATION.md](./CONFIGURATION.md).
 
 ---
 
@@ -111,7 +112,7 @@ ng-openapi-signals/
       runtime/           # one module per generated runtime file
   tests/                 # vitest suites, fixtures, snapshots, helpers
   examples/              # example spec + config + generated output (ignored by git)
-  docs/                  # architecture, runtime, roadmap, publishing, usage
+  docs/                  # architecture, runtime topics, CLI, config, usage
   .github/workflows/     # CI (lint, build, generate, test, --check, release checks)
 ```
 
@@ -465,14 +466,27 @@ have produced that tree first (CI runs it before `npm test`).
 4. Validate it in `validateConfig()`; validate raw CLI values in
    `buildCliConfig()`.
 5. Expose a CLI flag in `src/cli.ts` and add it to `CliGenerateOptions`.
-6. Document it in the [README configuration table](../README.md#configuration).
+6. Document it in the [configuration tables](./CONFIGURATION.md#options).
 
 ## Documentation map
 
-- [README.md](../README.md) — install, quick start, CLI usage, configuration.
+- [README.md](../README.md) — overview, install, quick start, documentation index.
+- [CLI.md](./CLI.md) — all CLI flags, `--check` (CI), `--dry-run`.
+- [CONFIGURATION.md](./CONFIGURATION.md) — config file and generator options.
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — this document: structure, pipeline,
   invariants.
-- [RUNTIME.md](./RUNTIME.md) — generated runtime API, middleware, error types.
+- [RUNTIME.md](./RUNTIME.md) — generated runtime overview and topic index.
+- [generated-api.md](./generated-api.md) — generated API style, signal
+  mutations, `MaybeSignal<T>`.
+- [transports.md](./transports.md) — `ApiFetchClient` / `ApiHttpClient`.
+- [runtime-configuration.md](./runtime-configuration.md) —
+  `provideNgOpenapiSignals()`.
+- [middleware.md](./middleware.md) — middleware patterns.
+- [errors.md](./errors.md) — error types.
+- [request-parameters.md](./request-parameters.md) — query/header parameters.
+- [request-bodies.md](./request-bodies.md) — request body formats.
+- [request-responses.md](./request-responses.md) — response parsing and dates.
+- [model-names.md](./model-names.md) — schema renames and import rules.
 - [ROADMAP.md](./ROADMAP.md) — milestones and planned features.
 - [PUBLISHING.md](./PUBLISHING.md) — release checklist and repository-specific
   gotchas.

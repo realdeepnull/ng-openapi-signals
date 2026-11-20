@@ -7,29 +7,19 @@ GET endpoints are generated as Angular `resource()` APIs, while mutating endpoin
 
 ## Features
 
-- Generate Angular API clients from OpenAPI 3.x specifications
-- Signal-first read APIs using Angular `resource()`
-- Lightweight runtime based on native `fetch()`
-- No dependency on Angular `HttpClient` (optional `httpClient` transport available)
-- Typed models generated from OpenAPI schemas
-- Path parameter support
-- Query parameter support
-- Advanced query parameter serialization (OpenAPI `style`/`explode`: `form`, `spaceDelimited`, `pipeDelimited`, `deepObject`)
-- Header parameter support
-- JSON request body support
-- Multipart form data (`multipart/form-data`) and file upload support
-- `application/x-www-form-urlencoded` request body support
-- Custom request content types
-- JSON, text, `Blob`, `ArrayBuffer` and `ReadableStream` response handling
-- File download support
-- Fetch middleware (onion-style `(request, next) => response`)
-- Class-based middleware with constructor DI via `NG_OPENAPI_SIGNALS_MIDDLEWARE` multi-provider
-- Auth header hooks
-- Custom default headers
-- Custom error mapping
-- Request and response hooks
-- Base URL configuration via `provideNgOpenapiSignals()`
-- Optional signal-based mutations — reactive `result`/`error`/`status`/`isLoading` signals for POST/PUT/PATCH/DELETE
+- Typed Angular API clients from OpenAPI 3.x specifications
+- GET endpoints as Angular `resource()` (signal-first, reactive)
+- POST / PUT / PATCH / DELETE as Promise-based `fetch()` methods
+- Lightweight runtime based on native `fetch()` — no `HttpClient`, no RxJS
+  (an optional `httpClient` transport is available)
+- Path, query and header parameters, including OpenAPI `style`/`explode`
+  query serialization
+- JSON, multipart/form-data (file upload), `x-www-form-urlencoded` and custom
+  request content types
+- JSON, text, `Blob`, `ArrayBuffer` and stream responses, including file download
+- Runtime extension points: base URL, default headers, auth hook, middleware,
+  request/response hooks, timeout and custom error mapping
+- Opt-in signal-based mutations for reactive write state
 
 ## Requirements
 
@@ -153,487 +143,46 @@ export class UserDetailComponent {
 
 That's it — you now have a fully typed, signal-first Angular API client.
 
----
-
-## CLI Usage
-
-### Generate
-
-```bash
-ng-openapi-signals generate --input <openapi-file> --output <output-directory>
-```
-
-### Options
-
-| Option                            | Description                                                                      |
-| --------------------------------- | -------------------------------------------------------------------------------- |
-| `-i, --input <path>`              | Path to the OpenAPI JSON or YAML file                                            |
-| `-o, --output <path>`             | Output directory for the generated Angular client                                |
-| `-c, --config <path>`             | Path to config file (default: `ng-openapi-signals.config.ts`)                    |
-| `--clean`                         | Clean output directory before generation (default: true)                         |
-| `--no-clean`                      | Preserve existing files in output directory                                      |
-| `--group-by <tag\|path>`          | Group APIs by tag or path (default: tag)                                         |
-| `--transport <fetch\|httpClient>` | HTTP transport (default: fetch)                                                  |
-| `--default-query-style <style>`   | Default query param style: form, spaceDelimited, pipeDelimited, or deepObject    |
-| `--default-query-explode <bool>`  | Default query param explode (true/false)                                         |
-| `--prefer-content-type <type>`    | Preferred request content type when multiple are offered                         |
-| `--signal-mutations`              | Enable signal-based mutation methods (default: false)                            |
-| `--date-transformer`              | Convert ISO-8601 date strings in JSON responses to Date objects (default: false) |
-| `--dry-run`                       | Print the files that would be generated without writing to disk                  |
-| `--check`                         | Verify generated output is up to date (exits 1 on mismatch; for CI)              |
-| `--fail-on-stale`                 | With `--check`: also exit 1 for files the spec no longer produces                |
-| `--verbose`                       | Show detailed progress and file lists                                            |
-
-### CI: verify generated output
-
-Use `--check` in CI to verify the generated client is up to date:
-
-```bash
-ng-openapi-signals generate --input ./openapi.json --output ./src/generated/api --check
-```
-
-The command exits with code `1` when generated files are outdated or missing.
-Line-ending differences alone (a `core.autocrlf=true` Windows checkout) do not
-fail the check — they are reported separately, because the content is identical.
-
-Stale files (on disk but no longer in the spec) are reported as warnings but do
-not fail the check. Pass `--fail-on-stale` to make them fatal:
-
-```bash
-ng-openapi-signals generate --check --fail-on-stale
-```
-
-> A `.gitattributes` with `* text=auto eol=lf` in the consuming repository keeps
-> the checkout in LF, which avoids the CRLF warning entirely.
-
-### Preview without writing: `--dry-run`
-
-```bash
-ng-openapi-signals generate --input ./openapi.json --output ./src/generated/api --dry-run --verbose
-```
-
-Generates the client in memory and lists the files (path + line count) without touching disk.
-
-### Recommended: use a config file
-
-Using a config file keeps your setup reproducible and version-controllable.
-
-```ts
-// ng-openapi-signals.config.ts
-import {defineConfig} from 'ng-openapi-signals/config';
-
-export default defineConfig({
-  input: './openapi.json',
-  output: './src/generated/api',
-  clean: true,
-  groupBy: 'tag',
-});
-```
-
-Then add a script to your `package.json`:
-
-```json
-{
-  "scripts": {
-    "generate:api": "ng-openapi-signals generate --config ng-openapi-signals.config.ts"
-  }
-}
-```
-
-Run it with:
-
-```bash
-npm run generate:api
-```
-
-You can also generate the API client before building your Angular app:
-
-```json
-{
-  "scripts": {
-    "generate:api": "ng-openapi-signals generate --config ng-openapi-signals.config.ts",
-    "build": "npm run generate:api && ng build",
-    "start": "npm run generate:api && ng serve"
-  }
-}
-```
-
-### CLI overrides
-
-CLI flags override config file values. Config file values override defaults.
-
-```bash
-ng-openapi-signals generate \
-  --input ./openapi.json \
-  --output ./src/generated/api \
-  --group-by path
-```
+GET endpoints return Angular `resource()` objects; POST/PUT/PATCH/DELETE return
+Promises. Step 3 shows the minimum runtime configuration (`basePath`); all other
+options live in the documentation below.
 
 ---
 
-## Generated API Style
+## Optional Features
 
-- **GET endpoints** → Angular `resource()` APIs (accept plain values or signals)
-- **POST / PUT / PATCH / DELETE** → Promise-based `fetch()` methods (path/query/header params also accept plain values or signals)
-- **Signal-based mutations** (opt-in via `runtime.signalMutations`) → `${operationId}Mutation()` methods returning a `Mutation` with `result`/`error`/`status`/`isLoading` signals
-
-```ts
-// GET — reactive resource
-readonly user = this.usersApi.getUserByIdResource({
-  id: this.userId,  // signal or plain value
-});
-
-// POST — promise-based mutation (default)
-await this.usersApi.createUser({
-  name: 'John Doe',
-  email: 'john@example.com',
-});
-```
-
-### Signal-based mutations (opt-in)
-
-When `runtime.signalMutations` is enabled, the generator additionally emits
-a `${operationId}Mutation()` method for every POST/PUT/PATCH/DELETE endpoint,
-alongside the existing Promise-based method (strictly additive).
-
-```ts
-// Signal-based mutation — reactive state, no manual `busy` flag
-readonly creating = this.usersApi.createUserMutation();
-
-create(): void {
-  this.creating.mutate({ name: 'John Doe', email: 'john@example.com' });
-}
-
-// In the template:
-//   creating.isLoading()  → boolean signal
-//   creating.result()     → the created user (or undefined)
-//   creating.error()      → the last error (or undefined)
-//   creating.status()     → 'idle' | 'loading' | 'success' | 'error'
-//   creating.reset()      → clears result/error, returns to 'idle'
-```
-
-For endpoints with path/query/header parameters, the parameters are bound
-at construction time (captured in the closure), and only the request body
-is passed to `mutate(body)`:
-
-```ts
-readonly uploading = this.usersApi.uploadUserAvatarMutation({
-  id: this.userId,  // signal or plain value
-});
-
-upload(): void {
-  this.uploading.mutate({ file: this.file, caption: 'Profile photo' });
-}
-```
-
-Enable the feature via the config file or CLI:
-
-```ts
-// ng-openapi-signals.config.ts
-export default defineConfig({
-  input: './openapi.json',
-  output: './src/generated/api',
-  runtime: {signalMutations: true},
-});
-```
-
-```bash
-ng-openapi-signals generate --signal-mutations
-```
-
-> See [`docs/RUNTIME.md`](./docs/RUNTIME.md) for full details on `MaybeSignal<T>`, the `Mutation` interface, response parsing, and more.
-
-### Date Transformer
-
-When `runtime.dateTransformer` is enabled (default `false`), the generator emits a `date-utils.ts` runtime file with a recursive `transformDates()` function that converts ISO-8601 date-time strings (e.g. `2026-07-15T12:00:00Z`) found anywhere in a parsed JSON response body into `Date` instances. Non-JSON responses (text, blob, arrayBuffer, stream) are left untouched.
-
-```ts
-// ng-openapi-signals.config.ts
-import {defineConfig} from 'ng-openapi-signals/config';
-
-export default defineConfig({
-  input: './openapi.json',
-  output: './src/generated/api',
-  runtime: {dateTransformer: true},
-});
-```
-
-```bash
-ng-openapi-signals generate --date-transformer
-```
-
-The transformer is applied automatically inside the generated client's JSON parsing path — no additional setup is needed at runtime. Works with both `fetch` and `httpClient` transports.
-
-### Example snippets
-
-The repository includes standalone, commented example files in [`docs/usage/`](./docs/usage/):
-
-- `resource-usage.ts` — GET endpoint with `resource()` and signals
-- `mutation-usage.ts` — POST/PUT/PATCH/DELETE as Promises
-- `mutation-signal-usage.ts` — signal-based mutation (`runtime.signalMutations`)
-- `mutation-signal-params-usage.ts` — signal-based mutation with path/query/header params
-- `auth-interceptor.ts` — auth headers and fetch middleware
-- `http-client-usage.ts` — `httpClient` transport setup
-- `multipart-upload.ts` — file upload with `FormData`
-- `date-transform-usage.ts` — automatic ISO-8601 date string → Date conversion (`runtime.dateTransformer`)
-
-These are illustrative only — adjust the import paths to your generated client directory. They are not included in the npm package.
+- **Signal-based mutations** — `runtime: {signalMutations: true}` adds
+  `${operationId}Mutation()` methods exposing `result`, `error`, `status` and
+  `isLoading` signals.
+  → [docs/generated-api.md](./docs/generated-api.md)
+- **Date transformer** — `runtime: {dateTransformer: true}` converts ISO-8601
+  date-time strings in JSON responses to `Date` instances.
+  → [docs/request-responses.md](./docs/request-responses.md)
+- **Runtime extension** — default headers, auth hook, middleware,
+  request/response hooks, timeout, error mapping.
+  → [docs/RUNTIME.md](./docs/RUNTIME.md)
+- **`httpClient` transport** — use Angular `HttpClient` and `HttpInterceptor`
+  instead of native `fetch()`.
+  → [docs/transports.md](./docs/transports.md)
 
 ---
 
-## Runtime
+## Documentation
 
-The generated client includes a small runtime:
-
-```text
-api-fetch-client.ts   (or api-http-client.ts)
-api-error.ts
-signal-utils.ts
-mutation-utils.ts     (only when runtime.signalMutations is enabled)
-date-utils.ts        (only when runtime.dateTransformer is enabled)
-providers.ts
-```
-
-- **`ApiFetchClient`** — wraps native `fetch()`, handles base URL, JSON/text/Blob responses, query params, abort signals, middleware (function-based and class-based with DI), hooks, and error mapping.
-- **`ApiHttpClient`** — wraps Angular `HttpClient` (when `transport: 'httpClient'`), same feature set, integrates with `HttpInterceptors`.
-- **`provideNgOpenapiSignals()`** — configures the runtime (base URL, headers, auth, function-based middleware array, hooks, error mapper). Class-based middleware is registered separately via the `NG_OPENAPI_SIGNALS_MIDDLEWARE` multi-provider token.
-
-> See [`docs/RUNTIME.md`](./docs/RUNTIME.md) for the full `provideNgOpenapiSignals()` API and all runtime extension points.
-
----
-
-## Configuration
-
-`ng-openapi-signals` supports an optional config file for project-level defaults.
-
-### Options
-
-| Option    | Type              | Default | Description                                             |
-| --------- | ----------------- | ------- | ------------------------------------------------------- |
-| `input`   | `string`          | —       | Path to the OpenAPI JSON or YAML file                   |
-| `output`  | `string`          | —       | Output directory for the generated Angular client       |
-| `clean`   | `boolean`         | `true`  | Clean output directory before generation                |
-| `groupBy` | `'tag' \| 'path'` | `'tag'` | Group generated APIs by OpenAPI tag or URL path segment |
-| `runtime` | `RuntimeConfig`   | `{}`    | Runtime options (see below)                             |
-
-#### `runtime`
-
-| Option                | Type                                                            | Default              | Description                                                                                      |
-| --------------------- | --------------------------------------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------ |
-| `transport`           | `'fetch' \| 'httpClient'`                                       | `'fetch'`            | HTTP transport (`fetch` = native fetch, `httpClient` = Angular HttpClient)                       |
-| `defaultHeaders`      | `Record<string, string>`                                        | `{}`                 | Static default headers baked into `provideNgOpenapiSignals` defaults                             |
-| `responseTypeHints`   | `boolean`                                                       | `true`               | Emit `responseType` hints in generated methods based on response content                         |
-| `defaultQueryStyle`   | `'form' \| 'spaceDelimited' \| 'pipeDelimited' \| 'deepObject'` | `'form'`             | Default query param serialization style when the spec doesn't specify `style`                    |
-| `defaultQueryExplode` | `boolean`                                                       | `true`               | Default `explode` flag for query params when the spec doesn't specify it                         |
-| `preferContentType`   | `string`                                                        | `'application/json'` | Preferred content type when a request body offers multiple media types                           |
-| `signalMutations`     | `boolean`                                                       | `false`              | Generate `${operationId}Mutation()` methods with reactive signals for POST/PUT/PATCH/DELETE      |
-| `dateTransformer`     | `boolean`                                                       | `false`              | Convert ISO-8601 date-time strings in JSON responses to `Date` instances (emits `date-utils.ts`) |
-
-### Using the `httpClient` transport
-
-By default the generated runtime uses native `fetch()`.
-To use Angular `HttpClient` instead (e.g. to integrate with `HttpInterceptors`), set `transport: 'httpClient'`:
-
-```ts
-// ng-openapi-signals.config.ts
-import {defineConfig} from 'ng-openapi-signals/config';
-
-export default defineConfig({
-  input: './openapi.json',
-  output: './src/generated/api',
-  runtime: {
-    transport: 'httpClient',
-  },
-});
-```
-
-Or via the CLI:
-
-```bash
-ng-openapi-signals generate --input ./openapi.json --output ./src/generated/api --transport httpClient
-```
-
-When `httpClient` is selected:
-
-- The generator emits `ApiHttpClient` instead of `ApiFetchClient`.
-- `provideNgOpenapiSignals()` does **not** include `provideHttpClient()` — register it yourself in your app config (e.g. `provideHttpClient(withInterceptors([...]))`) so you keep full control over interceptors and their order.
-- The `NG_OPENAPI_SIGNALS_MIDDLEWARE` token and `ApiMiddleware` interface are not emitted. Use `HttpInterceptorFn` or class-based `HttpInterceptor` instead.
-- Generated API service methods (`resource()` loaders, mutations) remain identical — only the underlying client changes.
-
-### Grouping
-
-By default, APIs are grouped by OpenAPI tag (`groupBy: 'tag'`).
-Each tag becomes one service file: `resources/<tag>.api.ts`.
-
-Set `groupBy: 'path'` to group by the first path segment instead.
-For example, `/users/{id}` and `/users` are grouped into `resources/users.api.ts`.
-
-### Preserving output
-
-Set `clean: false` to preserve existing files in the output directory:
-
-```ts
-export default defineConfig({
-  input: './openapi.json',
-  output: './src/generated/api',
-  clean: false,
-});
-```
-
-### Schema names that shadow globals or generated exports
-
-A schema named after a global type that a generated module _which imports
-models_ references is renamed with a `Model` suffix —
-`components.schemas.Record` becomes
-`export type RecordModel = Record<string, string>`, and every `$ref` follows
-the rename. Without this, `Record<…>` in the same module would resolve to the
-imported declaration instead of the built-in (TS2315 / TS2456), and a resource
-file importing a model named `Promise`/`Blob`/`ReadableStream`/`Uint8Array`/
-`AbortSignal` would shadow the built-in used in its own signatures.
-
-A schema whose name matches a binding the resource file **already imports** is
-renamed the same way: `Service`, `inject`, `resource` (from `@angular/core`),
-`ApiFetchClient`/`ApiHttpClient`, `readSignalOrValue`, `MaybeSignal`,
-`createMutation` and `Mutation`. A schema named `Service` is imported like any
-other model, so without the rename the file would declare that identifier twice
-— `import {Service} from '@angular/core'` and
-`import type {Service} from '../models'` (TS2300) — while generation, Prettier
-and the CLI all succeed.
-
-A schema whose name matches a **module-level export of a generated runtime
-module** is renamed the same way. The generated root `index.ts` re-exports
-`./providers`, `./api-error`, the client, `./signal-utils` (plus
-`./mutation-utils` / `./date-utils` when enabled) next to `./models`, so a
-schema called `ApiError`, `ApiRequestOptions`, `MaybeSignal`, `MutationStatus`,
-`transformDates`, `provideNgOpenapiSignals`, `NG_OPENAPI_SIGNALS_BASE_PATH`,
-`toApiError`, … is exported twice — `error TS2308: Module './models' has
-already exported a member named 'ApiError'` — for every consumer of the
-package. The complete list is
-`RESERVED_ROOT_EXPORT_NAMES` in `src/codegen/naming.ts`; `ApiError` becomes
-`ApiErrorModel`, `transformDates` becomes `transformDatesModel`.
-
-All three rename sets apply regardless of `transport` / `signalMutations` /
-`dateTransformer`, and they are applied as the **union** over every
-configuration, so declaration names never depend on generator options. They
-also apply when the previous output compiled: a schema using one of these
-names is renamed even if no collision occurred in that particular tree.
-Declaration names are document-global, so making the rename depend on which
-module happens to be emitted (or which group happens to import a model) would
-emit a different public type for the same spec depending on unrelated
-configuration.
-
-The global rename set is exactly six names — `Record`, `Promise`, `Blob`,
-`ReadableStream`, `Uint8Array`, `AbortSignal`. It is not "every global the
-generator mentions": `Partial`, `Map`, `Date`, `Error`, `FormData`, `Response`
-and friends only appear in the runtime modules, which never import models, so a
-model with one of those names is emitted unchanged. Matching is
-case-sensitive, so `record` or `MyRecord` keep their spelling. A tag-derived
-service class can never collide with the runtime-export set: `serviceNameFromTag()`
-always appends `Api` (`ApiError` → `ApiErrorApi`), and no runtime export ends in
-`Api`.
-
-### Which names are imported
-
-The generator imports a model whenever a generated type expression **references
-a declared model name** — that is the whole rule. The set of model names is the
-resolved set of `components.schemas` declarations (after reserved-word,
-global-shadow, resource-binding and runtime-export renames), so:
-
-- keywords emitted by the renderer (`never`, `null`, `unknown`) are never
-  imported;
-- globals the generated modules emit (`Record`, `Promise`, `Blob`,
-  `ReadableStream`, `Uint8Array`, `AbortSignal`) are never imported, because a
-  declaration with one of those names is renamed first (`Record` →
-  `RecordModel`);
-- names the generated runtime modules export (`ApiError`, `MaybeSignal`,
-  `transformDates`, …) are never imported under their unsuffixed spelling,
-  because such a declaration is renamed too (`ApiError` → `ApiErrorModel`) —
-  otherwise the root barrel would re-export the name twice;
-- object-literal property names and enum values that happen to match a model
-  name are not references and are not imported;
-- references inside unions, intersections, tuples, generics, `Record<…>` and
-  inline object literals are found regardless of how the type is structured.
-
-A schema named `File`, `ArrayBuffer`, `FormData` or `URLSearchParams` keeps its
-name and is imported like any other model: the generator never renders those
-names as a type (`format: binary` renders `Blob`; there is no `arrayBuffer`
-parser; the runtime _builds_ `FormData`/`URLSearchParams` from its `formData`
-option). Leaving them unimported would silently bind the use to the DOM global.
-
----
-
-## Advanced Request Support
-
-### Query Parameter Serialization
-
-The generator supports OpenAPI parameter `style` and `explode` for query parameters:
-
-| Style            | `explode: true`            | `explode: false`             |
-| ---------------- | -------------------------- | ---------------------------- |
-| `form` (default) | `tags=a&tags=b` (repeated) | `tags=a,b` (comma-separated) |
-| `spaceDelimited` | `tags=a&tags=b` (repeated) | `tags=a b` (space-separated) |
-| `pipeDelimited`  | `tags=a&tags=b` (repeated) | `tags=a\|b` (pipe-separated) |
-| `deepObject`     | `filters[status]=active`   | —                            |
-
-Parameters with default style (`form` + `explode: true`) are passed as plain values for backward compatibility.
-Non-default styles are wrapped with metadata: `{ value: params.tags, style: 'spaceDelimited', explode: false }`.
-
-### Multipart Form Data and File Upload
-
-When a request body uses `multipart/form-data`, the generator emits `formData: body` instead of `body:`.
-The runtime builds a `FormData` object from the typed input. Binary parts (`format: binary`) are typed as `Blob`.
-
-```ts
-// OpenAPI: multipart/form-data with file + caption
-await this.usersApi.uploadUserAvatar({file: blob, caption: 'Profile photo'}, {id: 'usr_123'});
-```
-
-The runtime automatically:
-
-- Builds `FormData` from the typed object
-- Appends `Blob` values directly (no JSON serialization)
-- Lets the browser set the `Content-Type` with the multipart boundary
-
-### `application/x-www-form-urlencoded`
-
-For URL-encoded form bodies, the runtime builds `URLSearchParams` from the typed object.
-
-### Custom Content Types
-
-When a request body uses a non-JSON content type (e.g. `application/octet-stream`),
-the generator emits a `contentType` field. The runtime passes `Blob`/`ArrayBuffer` bodies
-through without JSON serialization.
-
-### File Download and Stream Responses
-
-Binary responses (`image/*`, `application/octet-stream`, etc.) are handled as `Blob` or `ArrayBuffer`.
-`text/event-stream` responses are handled as `ReadableStream` (fetch transport) or `Blob` (httpClient transport).
-
-### Header Parameters
-
-Header parameters (`in: header`) are generated as method arguments and merged into the request `headers` object.
-Header names with hyphens (e.g. `X-Request-Id`) are properly quoted in TypeScript.
-
----
-
-## Current Scope
-
-For the full list of planned features and milestones, see the [Roadmap](./docs/ROADMAP.md).  
-For release notes and version history, see the [Changelog](./CHANGELOG.md).
-
-## Design Philosophy
-
-`ng-openapi-signals` follows a simple design:
-
-```text
-GET endpoints
-→ Angular resource() + fetch()
-
-POST / PUT / PATCH / DELETE endpoints
-→ Promise-based fetch() methods
-```
-
-The goal is to generate Angular code that feels natural in modern signal-based applications while keeping the runtime small and easy to understand.
+- [docs/CLI.md](./docs/CLI.md) — all CLI flags, `--check` (CI), `--dry-run`
+- [docs/CONFIGURATION.md](./docs/CONFIGURATION.md) — config file, generator
+  options, `httpClient` transport
+- [docs/RUNTIME.md](./docs/RUNTIME.md) — generated runtime overview and topic
+  index (`generated-api.md`, `transports.md`, `runtime-configuration.md`,
+  `middleware.md`, `errors.md`, `request-parameters.md`, `request-bodies.md`,
+  `request-responses.md`, `model-names.md`)
+- [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) — generator internals, pipeline,
+  invariants
+- [docs/ROADMAP.md](./docs/ROADMAP.md) — milestones and planned features
+- [docs/PUBLISHING.md](./docs/PUBLISHING.md) — release checklist
+- [docs/usage/](./docs/usage/) — standalone usage examples (not in the npm
+  package)
+- [CHANGELOG.md](./CHANGELOG.md) — version history
 
 ## Generated Code
 
