@@ -15,13 +15,14 @@ import {
   NG_OPENAPI_SIGNALS_ERROR_MAPPER,
   NG_OPENAPI_SIGNALS_REQUEST_HOOK,
   NG_OPENAPI_SIGNALS_RESPONSE_HOOK,
+  NG_OPENAPI_SIGNALS_TIMEOUT,
   type ApiMiddlewareEntry,
   type ApiAuthHook,
   type ApiErrorMapper,
   type ApiRequestHook,
   type ApiResponseHook,
 } from '../examples/generated/providers';
-import {toApiError} from '../examples/generated/api-error';
+import {toApiError, ApiError, ApiNetworkError} from '../examples/generated/api-error';
 
 const BASE_URL = 'https://api.example.com';
 
@@ -33,6 +34,7 @@ interface ClientOverrides {
   errorMapper?: ApiErrorMapper;
   onRequest?: ApiRequestHook;
   onResponse?: ApiResponseHook;
+  timeoutMs?: number;
 }
 
 function createClient(overrides: ClientOverrides = {}): ApiFetchClient {
@@ -68,6 +70,10 @@ function createClient(overrides: ClientOverrides = {}): ApiFetchClient {
 
   if (overrides.onResponse) {
     providers.push({provide: NG_OPENAPI_SIGNALS_RESPONSE_HOOK, useValue: overrides.onResponse});
+  }
+
+  if (overrides.timeoutMs !== undefined) {
+    providers.push({provide: NG_OPENAPI_SIGNALS_TIMEOUT, useValue: overrides.timeoutMs});
   }
 
   const injector: EnvironmentInjector = createEnvironmentInjector(
@@ -151,6 +157,159 @@ describe('generated ApiFetchClient (runtime via DI)', () => {
       expect(url).toContain('tags=admin');
       expect(url).toContain('tags=active');
     });
+
+    it('keeps the last base segment of an absolute base path', async () => {
+      for (const base of ['https://h/api', 'https://h/api/']) {
+        const fetchMock = mockFetch(jsonResponse({}));
+        vi.stubGlobal('fetch', fetchMock);
+        const client = createClient({basePath: base});
+
+        await client.request({method: 'GET', path: '/events'});
+
+        expect(getFetchCall(fetchMock).url).toBe('https://h/api/events');
+      }
+    });
+
+    it('supports a root-relative base path without document (SSR)', async () => {
+      const fetchMock = mockFetch(jsonResponse({}));
+      vi.stubGlobal('fetch', fetchMock);
+      const client = createClient({basePath: '/api'});
+
+      // Previously threw `Invalid URL` because the base was handed to `new
+      // URL()` as-is. The request URL must stay relative so SSR does not
+      // target the synthetic origin.
+      await client.request({method: 'GET', path: '/events'});
+
+      expect(getFetchCall(fetchMock).url).toBe('/api/events');
+    });
+
+    it('supports an empty base path without document (SSR)', async () => {
+      const fetchMock = mockFetch(jsonResponse({}));
+      vi.stubGlobal('fetch', fetchMock);
+      const client = createClient({basePath: ''});
+
+      await client.request({method: 'GET', path: '/events'});
+
+      expect(getFetchCall(fetchMock).url).toBe('/events');
+    });
+
+    it('keeps a protocol-relative base intact', async () => {
+      // Previously mangled into `le.com/api/events` because `//cdn...` fails
+      // the absolute-URL regex and was treated as a relative path.
+      const fetchMock = mockFetch(jsonResponse({}));
+      vi.stubGlobal('fetch', fetchMock);
+      const client = createClient({basePath: '//cdn.example.com/api'});
+
+      await client.request({method: 'GET', path: '/events'});
+
+      expect(getFetchCall(fetchMock).url).toBe('//cdn.example.com/api/events');
+    });
+
+    it('keeps a query or fragment in the base before the path', async () => {
+      // Naive concatenation produced `https://h/api?x=1/events`, turning the
+      // path into part of the query value.
+      const cases: [string, string][] = [
+        ['https://h/api?x=1', 'https://h/api/events?x=1'],
+        ['https://h/api#frag', 'https://h/api/events#frag'],
+      ];
+
+      for (const [base, expected] of cases) {
+        const fetchMock = mockFetch(jsonResponse({}));
+        vi.stubGlobal('fetch', fetchMock);
+        const client = createClient({basePath: base});
+
+        await client.request({method: 'GET', path: '/events'});
+
+        expect(getFetchCall(fetchMock).url).toBe(expected);
+      }
+    });
+  });
+
+  describe('error handling', () => {
+    it('rejects with ApiNetworkError when fetch rejects', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+      const client = createClient();
+
+      const error = await client.request({method: 'GET', path: '/users'}).catch((e) => e);
+
+      expect(error).toBeInstanceOf(ApiNetworkError);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as ApiNetworkError).status).toBe(0);
+      expect((error as ApiNetworkError).url).toContain('/users');
+      expect((error as ApiNetworkError).cause).toBeInstanceOf(TypeError);
+    });
+
+    it('passes an AbortError through unchanged', async () => {
+      const abort = new Error('The operation was aborted.');
+      abort.name = 'AbortError';
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(abort));
+      const client = createClient();
+
+      const error = await client.request({method: 'GET', path: '/users'}).catch((e) => e);
+
+      expect(error).toBe(abort);
+      expect(error).not.toBeInstanceOf(ApiNetworkError);
+    });
+
+    it('does not wrap an ApiError thrown by middleware', async () => {
+      // A response validator rejecting a 200 error envelope is the realistic
+      // case; its error must reach the caller unchanged.
+      const fromMiddleware = new ApiError(200, 'OK', {status: {status: 'error'}}, new Headers());
+      vi.stubGlobal('fetch', mockFetch(jsonResponse({})));
+      const client = createClient({
+        middleware: [
+          async () => {
+            throw fromMiddleware;
+          },
+        ],
+      });
+
+      const error = await client.request({method: 'GET', path: '/users'}).catch((e) => e);
+
+      expect(error).toBe(fromMiddleware);
+      expect(error).toBeInstanceOf(ApiError);
+    });
+
+    it('exposes Retry-After as seconds on the error', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          new Response('Too Many Requests', {
+            status: 429,
+            headers: {'content-type': 'text/plain', 'retry-after': '30'},
+          }),
+        ),
+      );
+      const client = createClient();
+
+      const error = (await client
+        .request({method: 'GET', path: '/users'})
+        .catch((e) => e)) as ApiError;
+
+      expect(error.status).toBe(429);
+      expect(error.retryAfterSeconds).toBe(30);
+    });
+
+    it('lets a timeout surface as TimeoutError, not ApiNetworkError', async () => {
+      // `AbortSignal.timeout()` rejects with `name: 'TimeoutError'` — a name
+      // `resource()` does not treat as cancellation, and which must stay
+      // distinguishable from a genuine network failure.
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          (_url: string, init: RequestInit) =>
+            new Promise((_resolve, reject) => {
+              init.signal?.addEventListener('abort', () => reject(init.signal!.reason));
+            }),
+        ),
+      );
+      const client = createClient({timeoutMs: 1});
+
+      const error = await client.request({method: 'GET', path: '/slow'}).catch((e) => e);
+
+      expect((error as Error).name).toBe('TimeoutError');
+      expect(error).not.toBeInstanceOf(ApiNetworkError);
+    });
   });
 
   describe('query parameter styles', () => {
@@ -202,6 +361,40 @@ describe('generated ApiFetchClient (runtime via DI)', () => {
       const url = getFetchCall(fetchMock).url;
       expect(url).toContain('filters%5Bstatus%5D=active');
       expect(url).toContain('filters%5Brole%5D=admin');
+    });
+
+    it('throws instead of sending [object Object] for a nested object', async () => {
+      const fetchMock = mockFetch(jsonResponse({}));
+      vi.stubGlobal('fetch', fetchMock);
+      const client = createClient();
+
+      // No OpenAPI query style can express a second nesting level, so silently
+      // sending `[object Object]` (the previous behaviour) hid a real loss.
+      await expect(
+        client.request({
+          method: 'GET',
+          path: '/search',
+          query: {filter: {nested: {a: 1}}},
+        }),
+      ).rejects.toThrow(/nested object/);
+
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('joins a nested array inside an object instead of stringifying it', async () => {
+      const fetchMock = mockFetch(jsonResponse({}));
+      vi.stubGlobal('fetch', fetchMock);
+      const client = createClient();
+
+      await client.request({
+        method: 'GET',
+        path: '/search',
+        query: {filter: {tags: ['a', 'b']}},
+      });
+
+      const url = getFetchCall(fetchMock).url;
+      expect(url).toContain('tags=a%2Cb');
+      expect(url).not.toContain('%5Bobject');
     });
 
     it('serializes form with explode:true as repeated keys', async () => {
@@ -890,6 +1083,24 @@ describe('generated ApiFetchClient (runtime via DI)', () => {
       expect(init.body).toBe('names=a%2Cb&count=1');
       const headers = init.headers as Record<string, string>;
       expect(headers).toHaveProperty('Content-Type', 'application/x-www-form-urlencoded');
+    });
+
+    it('repeats the key per array element in form-urlencoded bodies', async () => {
+      const fetchMock = mockFetch(jsonResponse({created: 1}));
+      vi.stubGlobal('fetch', fetchMock);
+      const client = createClient();
+
+      await client.request({
+        method: 'POST',
+        path: '/bulk',
+        // `String(['a','b'])` produced `1,2`-style values, losing the element
+        // boundary. The OpenAPI form default repeats the key instead.
+        formData: {tags: ['a', 'b'], empty: [], count: 1},
+        contentType: 'application/x-www-form-urlencoded',
+      });
+
+      const {init} = getFetchCall(fetchMock);
+      expect(init.body).toBe('tags=a&tags=b&count=1');
     });
 
     it('passes Blob body through without JSON.stringify', async () => {

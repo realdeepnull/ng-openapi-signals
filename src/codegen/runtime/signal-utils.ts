@@ -1,5 +1,5 @@
 export function generateSignalUtils(): string {
-  return `import { Signal, isSignal } from '@angular/core';
+  return `import { isSignal, type Signal } from '@angular/core';
 
 export type MaybeSignal<T> = T | Signal<T>;
 

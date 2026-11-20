@@ -1,5 +1,5 @@
 export function generateMutationUtils(): string {
-  return `import { Signal, signal, computed } from '@angular/core';
+  return `import { signal, computed, type Signal } from '@angular/core';
 
 export type MutationStatus = 'idle' | 'loading' | 'success' | 'error';
 

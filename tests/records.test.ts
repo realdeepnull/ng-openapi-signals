@@ -38,6 +38,6 @@ describe('record / additionalProperties', () => {
 
   it('imports Tag when used in a record', async () => {
     const content = await readFile(join(OUTPUT_DIR, 'models', 'config.ts'), 'utf8');
-    expect(content).toContain('import { Tag } from');
+    expect(content).toContain('import type {Tag} from');
   });
 });

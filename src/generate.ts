@@ -1,6 +1,6 @@
 import {mkdir, rm, writeFile} from 'node:fs/promises';
 import {dirname, join, parse, resolve, sep} from 'node:path';
-import {format} from 'prettier';
+import {format, resolveConfig} from 'prettier';
 import {loadOpenApi} from './openapi';
 import type {GeneratorConfig} from './codegen/types';
 import {DEFAULT_RUNTIME_CONFIG} from './config';
@@ -50,25 +50,39 @@ export async function generateFiles(config: GeneratorConfig): Promise<Record<str
   return {
     ...generateRuntimeFiles(normalizedConfig),
     ...generateModelFiles(schemas),
-    ...generateApiFiles(operations, normalizedConfig),
+    ...generateApiFiles(operations, normalizedConfig, names),
     'index.ts': generateIndexFile(normalizedConfig),
   };
 }
 
 /**
  * Formats every generated file with Prettier and prepends the
- * auto-generated header. Pure function — no disk I/O.
+ * auto-generated header. Pure function — no disk I/O beyond resolving the
+ * project's Prettier configuration.
+ *
+ * The project's own Prettier configuration (resolved from `outputRoot`) is
+ * merged over the generator defaults, so `npx prettier --check` on the output
+ * directory does not report every generated file as misformatted. Without
+ * this, a project using `printWidth: 100` / `trailingComma: 'all'` and the
+ * generator's `80` / `'none'` rewrite each other's output on every run.
  *
  * Files are formatted in parallel; Prettier formatting is pure per file, so
  * parallel execution produces identical output to sequential formatting.
  */
-export async function formatFiles(files: Record<string, string>): Promise<Record<string, string>> {
+export async function formatFiles(
+  files: Record<string, string>,
+  outputRoot?: string,
+): Promise<Record<string, string>> {
+  // A single resolution per run is enough: the generated tree is one flat
+  // output directory, so the effective config cannot differ per file.
+  const projectOptions = await resolvePrettierOptions(outputRoot);
+
   const entries = await Promise.all(
     Object.entries(files).map(async ([fileName, content]) => {
       const formatted = await format(withHeader(content), {
+        ...DEFAULT_PRETTIER_OPTIONS,
+        ...projectOptions,
         parser: 'typescript',
-        singleQuote: true,
-        trailingComma: 'none',
       });
       return [fileName, formatted] as const;
     }),
@@ -76,6 +90,61 @@ export async function formatFiles(files: Record<string, string>): Promise<Record
 
   return Object.fromEntries(entries);
 }
+
+/** Generator defaults, used when the project has no Prettier configuration. */
+const DEFAULT_PRETTIER_OPTIONS = {
+  parser: 'typescript',
+  singleQuote: true,
+  trailingComma: 'none',
+} as const;
+
+/**
+ * Resolves the project's Prettier configuration for the output directory.
+ *
+ * Returns an empty object when the project has no configuration (or when
+ * resolution fails, e.g. an invalid `.prettierrc`) so generation never fails
+ * because of an unrelated formatting config.
+ *
+ * Prettier's `resolveConfig()` expects a *file path*, not a directory: given a
+ * directory it treats the last path segment as the file name and starts
+ * resolving from the parent. A `.prettierrc` inside the output directory would
+ * be skipped, and `overrides` (`files: '*.generated.ts'`) would never match.
+ * Passing a representative file inside the directory fixes both.
+ *
+ * Results are memoized per directory: a single CLI run formats the whole
+ * output tree, so re-walking the filesystem for every file (and for every
+ * `--check`/`--dry-run` pass over the same tree) is pure overhead.
+ */
+async function resolvePrettierOptions(outputRoot?: string): Promise<Record<string, unknown>> {
+  const root = outputRoot ?? process.cwd();
+  const cached = prettierOptionsCache.get(root);
+
+  if (cached) {
+    return cached;
+  }
+
+  let options: Record<string, unknown> = {};
+
+  try {
+    const resolved = await resolveConfig(join(root, 'index.ts'));
+
+    if (resolved) {
+      // `parser` is always ours: the generator emits TypeScript, and a project
+      // config may only be resolvable per file extension otherwise.
+      const {parser: _parser, ...rest} = resolved;
+
+      options = rest as Record<string, unknown>;
+    }
+  } catch {
+    options = {};
+  }
+
+  prettierOptionsCache.set(root, options);
+
+  return options;
+}
+
+const prettierOptionsCache = new Map<string, Record<string, unknown>>();
 
 /**
  * Writes the given (formatted) file map to the output directory.
@@ -147,7 +216,7 @@ function assertSafeToClean(outputRoot: string): void {
  */
 export async function generate(config: GeneratorConfig): Promise<void> {
   const files = await generateFiles(config);
-  const formatted = await formatFiles(files);
+  const formatted = await formatFiles(files, config.output);
   await writeFiles(config.output, formatted, config.clean);
 }
 

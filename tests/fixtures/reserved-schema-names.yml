@@ -22,6 +22,59 @@ components:
       type: object
       properties:
         ref: {$ref: '#/components/schemas/default'}
+    # Strict-mode future reserved words: `export interface private {}` fails
+    # with TS1214 (TS1213 inside the resource class), so each must be renamed.
+    implements:
+      type: object
+      properties:
+        x: {type: string}
+    interface:
+      type: object
+      properties:
+        x: {type: string}
+    package:
+      type: object
+      properties:
+        x: {type: string}
+    private:
+      type: object
+      properties:
+        x: {type: string}
+    protected:
+      type: object
+      properties:
+        x: {type: string}
+    public:
+      type: object
+      properties:
+        x: {type: string}
+    static:
+      type: object
+      properties:
+        x: {type: string}
+    let:
+      type: object
+      properties:
+        x: {type: string}
+    # Legal as a declaration, but not portable through the generated package:
+    # `import {type}` reads as the type-only modifier (TS1484).
+    type:
+      type: string
+      enum: [a, b]
+    # Legal in every position the generator emits, kept verbatim on purpose
+    # (see RESERVED_TYPE_NAMES): renaming it would change the generated API.
+    namespace:
+      type: object
+      properties:
+        x: {type: string}
+    # Primitive type keywords are valid OpenAPI schema names but reject
+    # declaration names (TS2427/TS2457); they are PascalCased as well.
+    string:
+      type: object
+      properties:
+        x: {type: string}
+    number:
+      type: integer
 paths:
   /items:
     get:
@@ -37,3 +90,37 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/default'}
+  /items/{id}:
+    post:
+      operationId: updateItem
+      tags: [Items]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/interface'}
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/private'}
+  /items/filtered:
+    get:
+      operationId: filterItems
+      tags: [Items]
+      parameters:
+        # A primitive-keyword schema is renamed; the parameter type must follow.
+        - name: filter
+          in: query
+          schema: {$ref: '#/components/schemas/string'}
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/number'}

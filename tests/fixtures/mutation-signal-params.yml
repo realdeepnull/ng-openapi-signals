@@ -1,0 +1,99 @@
+openapi: 3.0.3
+info: {title: mutation signal params fixture, version: '1.0'}
+components:
+  schemas:
+    DoActionRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason: {type: string}
+    DoActionResponse:
+      type: object
+      properties:
+        ok: {type: boolean}
+paths:
+  # Mutation with path + query + header params and a JSON body. Every param is
+  # typed `MaybeSignal<T>`, so the Promise method must unwrap them itself.
+  /users/{id}/action:
+    post:
+      operationId: doAction
+      tags: [Actions]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: verbose
+          in: query
+          schema: {type: boolean}
+        - name: X-Trace
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DoActionRequest'}
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DoActionResponse'}
+  # Path + query params only, and no GET in this tag group: the previous import
+  # gate emitted `readSignalOrValue` without ever calling it (TS6133).
+  /projects/{projectId}/archive:
+    post:
+      operationId: archiveProject
+      tags: [QueryOnly]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema: {type: string}
+        - name: dryRun
+          in: query
+          schema: {type: boolean}
+      responses:
+        '204':
+          description: archived
+  # Params that normalize to the same identifier: the locals must stay unique
+  # (`resolved_userId`, `resolved_userId2`, `resolved_userId3`).
+  /colliding/{user-id}/rename:
+    post:
+      operationId: renameColliding
+      tags: [Colliding]
+      parameters:
+        - name: user-id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: userId
+          in: query
+          schema: {type: string}
+        - name: user_id
+          in: header
+          required: true
+          schema: {type: string}
+      responses:
+        '204':
+          description: renamed
+  # The *same* name in two locations (legal: uniqueness is name + `in`). The
+  # path template may only use the `in: path` entry; a name-keyed lookup let
+  # the query entry win and rendered the wrong local, leaving the other one
+  # unused (TS6133). Both must keep a local that the request actually uses.
+  /same-name/{id}/touch:
+    post:
+      operationId: touchSameName
+      tags: [SameName]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: id
+          in: query
+          schema: {type: string}
+      responses:
+        '204':
+          description: touched

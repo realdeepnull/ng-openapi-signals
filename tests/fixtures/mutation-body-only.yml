@@ -1,0 +1,22 @@
+openapi: 3.0.3
+info: {title: mutation body-only fixture, version: '1.0'}
+components:
+  schemas:
+    CreateThingRequest:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string}
+paths:
+  # A mutation without path/query/header params: neither `MaybeSignal` nor
+  # `readSignalOrValue` is referenced, so signal-utils must not be imported.
+  /things:
+    post:
+      operationId: createThing
+      tags: [Things]
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateThingRequest'}
+      responses:
+        '204': {description: created}

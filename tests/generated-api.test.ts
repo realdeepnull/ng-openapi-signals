@@ -79,9 +79,11 @@ describe('generated API', () => {
   it('params factory for required-param GET returns undefined when required param is undefined', async () => {
     const content = await readApiFile();
     // getUserById has a required `id` path param → params() must be able to
-    // return undefined to preserve Angular resource() idle state.
+    // return undefined to preserve Angular resource() idle state. The signal is
+    // read once into a local, so the guard compares the local.
     expect(content).toContain('| undefined =>');
-    expect(content).toMatch(/readSignalOrValue\(params\.id\) === undefined/);
+    expect(content).toMatch(/resolved_id === undefined/);
+    expect(content).toMatch(/readSignalOrValue\(params\.id\)/);
   });
 
   it('params factory for optional-only GET always resolves (no undefined guard)', async () => {
@@ -132,7 +134,7 @@ describe('generated API with httpClient transport', () => {
 
   it('imports ApiHttpClient from api-http-client', async () => {
     const content = await readFile(join(HTTP_OUTPUT_DIR, 'resources', 'users.api.ts'), 'utf8');
-    expect(content).toContain("import { ApiHttpClient } from '../api-http-client';");
+    expect(content).toContain("import {ApiHttpClient} from '../api-http-client';");
     expect(content).toContain('inject(ApiHttpClient)');
     expect(content).not.toContain('ApiFetchClient');
   });

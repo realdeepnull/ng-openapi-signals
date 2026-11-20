@@ -1,0 +1,711 @@
+openapi: 3.0.3
+info:
+  title: Global type name shadowing fixture
+  version: 1.0.0
+paths:
+  # Inline response with declared members *and* a typed `additionalProperties`
+  # that references the `Record` schema. The hoisted model file renders
+  # `{ label?: string } & Record<string, Record>` — a global `Record` next to
+  # an import of the renamed declaration.
+  /records:
+    get:
+      operationId: getRecords
+      tags: [Records]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  label:
+                    type: string
+                additionalProperties:
+                  $ref: '#/components/schemas/Record'
+  # `$ref`s to the renamed declarations from resource files that also emit
+  # `Promise<…>`, `Blob` and `ReadableStream<Uint8Array> | null`.
+  /promises:
+    get:
+      operationId: getPromises
+      tags: [Records]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Promise'
+  /blobs:
+    get:
+      operationId: getBlob
+      tags: [Records]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/octet-stream:
+              schema:
+                $ref: '#/components/schemas/Blob'
+  /streams:
+    get:
+      operationId: getStream
+      tags: [Records]
+      responses:
+        '200':
+          description: ok
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/ReadableStream'
+  # `Uint8Array` is the one global the generator emits only *inside* another
+  # type expression (`ReadableStream<Uint8Array> | null`), so a model with that
+  # name must be imported here to shadow it — otherwise deleting it from
+  # `RESERVED_GLOBAL_TYPE_NAMES` fails nothing and the tree silently binds the
+  # declaration into `ReadableStream<Uint8ArrayModel>` instead.
+  /byte-arrays:
+    get:
+      operationId: getBytes
+      tags: [Records]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Uint8Array'
+  # `AbortSignal` is emitted as the `signal?: AbortSignal` parameter of every
+  # Promise mutation method. A model of that name imported by the same resource
+  # file shadows the DOM type (TS2740 at every call site).
+  /aborts:
+    post:
+      operationId: postAbort
+      tags: [Records]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AbortSignal'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AbortSignal'
+  # `File` and `ArrayBuffer` are DOM globals the generator never renders into a
+  # type, so a schema with either name must keep its declaration name *and* be
+  # imported like any other model. Suppressing the import while keeping the name
+  # would silently bind `request<File>` to the DOM `File` — which still compiles,
+  # so no `tsc` guard can catch it.
+  /files:
+    get:
+      operationId: getFile
+      tags: [Files]
+      parameters:
+        - name: file
+          in: query
+          schema:
+            $ref: '#/components/schemas/File'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/File'
+  /buffers:
+    post:
+      operationId: sendBuffer
+      tags: [Files]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ArrayBuffer'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArrayBuffer'
+  # `FormData` and `URLSearchParams` are DOM globals the generator never renders
+  # into a type: the runtime builds them from its `formData` option, and the
+  # runtime modules never import models. A schema with either name must keep its
+  # declaration name *and* be imported — suppressing the import while keeping
+  # the name silently binds `request<FormData>` / `body: URLSearchParams` to the
+  # DOM class, which still compiles.
+  /forms:
+    get:
+      operationId: getFormData
+      tags: [Files]
+      parameters:
+        - name: form
+          in: query
+          schema:
+            $ref: '#/components/schemas/FormData'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FormData'
+  /search-params:
+    post:
+      operationId: sendSearchParams
+      tags: [Files]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/URLSearchParams'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/URLSearchParams'
+  # A model named after a global *value* (`String`) keeps its name: the
+  # type-only import does not shadow `String(...)`.
+  /strings/{id}:
+    get:
+      operationId: getString
+      tags: [Files]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/String'
+      responses:
+        '200':
+          description: ok
+  # A body + response referencing `Promise` covers the `Promise<T>` return and
+  # the `AbortSignal` parameter in a method signature that imports the model.
+  /promises/{id}:
+    post:
+      operationId: replacePromise
+      tags: [Records]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Promise'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Promise'
+  # Schemas whose names are also module-scope bindings the resource template
+  # imports (`Service`, `inject`, `resource` from `@angular/core`;
+  # `ApiFetchClient`/`ApiHttpClient`; `readSignalOrValue`, `MaybeSignal`;
+  # `createMutation`, `Mutation`). The positive import rule puts such a
+  # declaration into the resource file's `import type {…} from '../models'`
+  # list, next to the template's own import of the same name — a duplicate
+  # identifier (TS2300) that no later stage catches: generation succeeds,
+  # Prettier parses the file, the CLI exits 0.
+  # A tag group with a GET *and* a mutation makes the file import
+  # `resource`, `readSignalOrValue`, `MaybeSignal`, `createMutation` and
+  # `Mutation` all at once.
+  /bindings/{id}:
+    get:
+      operationId: getBinding
+      tags: [Bindings]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Service'
+  /bindings:
+    post:
+      operationId: createBinding
+      tags: [Bindings]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Mutation'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Service'
+  # One operation per remaining template binding, so every one of the nine
+  # names in `RESERVED_RESOURCE_BINDING_NAMES` is actually imported by the same
+  # resource file. Without the rename each of these produces a second
+  # module-scope binding next to the template's own import (TS2300).
+  # `ApiHttpClient` is the transport-dependent one: it is renamed in this
+  # `fetch` pass too (the name must not depend on `runtime.transport`) and is
+  # bound by the `httpClient` pass in `global-type-names.test.ts`.
+  /bindings/inject:
+    get:
+      operationId: getBindingInject
+      tags: [Bindings]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/inject'}
+  /bindings/resource:
+    get:
+      # Not `getBindingResource`: that operationId collides with the derived
+      # `…Resource` member name of the `/bindings/{id}` operation above.
+      operationId: getBindingResourceSchema
+      tags: [Bindings]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/resource'}
+  /bindings/api-fetch-client:
+    get:
+      operationId: getBindingApiFetchClient
+      tags: [Bindings]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiFetchClient'}
+  /bindings/api-http-client:
+    get:
+      operationId: getBindingApiHttpClient
+      tags: [Bindings]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiHttpClient'}
+  /bindings/read-signal-or-value:
+    get:
+      operationId: getBindingReadSignalOrValue
+      tags: [Bindings]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/readSignalOrValue'}
+  /bindings/maybe-signal:
+    get:
+      operationId: getBindingMaybeSignal
+      tags: [Bindings]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MaybeSignal'}
+  /bindings/create-mutation:
+    post:
+      operationId: createBindingCreateMutation
+      tags: [Bindings]
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/createMutation'}
+      responses:
+        '204': {description: created}
+  # Root-barrel collisions: schemas named exactly like a module-level export of
+  # a generated runtime module. Such a declaration compiles on its own and
+  # collides with nothing *inside* a module, so neither Prettier nor the CLI
+  # notices. The duplicate only exists at the package entry point, where
+  # `index.ts` re-exports `./providers`, `./api-error`, the client,
+  # `./signal-utils`, `./mutation-utils`, `./date-utils`, `./models` and
+  # `./resources` — two `export *` of one name is TS2308 for every consumer.
+  #
+  # Every name below is `$ref`'d from the `RuntimeExports` group so it is both
+  # declared and imported (the positive import rule), and so deleting it from
+  # `RESERVED_ROOT_EXPORT_NAMES` fails the compile guard instead of passing
+  # green.
+  /root-exports/api-error:
+    get:
+      operationId: getRootApiError
+      tags: [RuntimeExports]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+  /root-exports/api-network-error:
+    get:
+      operationId: getRootApiNetworkError
+      tags: [RuntimeExports]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiNetworkError'}
+  /root-exports/to-api-error:
+    get:
+      operationId: getRootToApiError
+      tags: [RuntimeExports]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/toApiError'}
+  /root-exports/to-api-error-from-http-error-response:
+    get:
+      operationId: getRootToApiErrorFromHttpErrorResponse
+      tags: [RuntimeExports]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/toApiErrorFromHttpErrorResponse'}
+  /root-exports/api-request-options:
+    get:
+      operationId: getRootApiRequestOptions
+      tags: [RuntimeExports]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiRequestOptions'}
+  /root-exports/query-param-options:
+    get:
+      operationId: getRootQueryParamOptions
+      tags: [RuntimeExports]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/QueryParamOptions'}
+  /root-exports/transform-dates:
+    get:
+      operationId: getRootTransformDates
+      tags: [RuntimeExports]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/transformDates'}
+  /root-exports/provide-ng-openapi-signals:
+    get:
+      operationId: getRootProvideNgOpenapiSignals
+      tags: [RuntimeExports]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/provideNgOpenapiSignals'}
+  /root-exports/api-request-context:
+    get:
+      operationId: getRootApiRequestContext
+      tags: [RuntimeExports]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiRequestContext'}
+  /root-exports/api-error-mapper:
+    get:
+      operationId: getRootApiErrorMapper
+      tags: [RuntimeExports]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiErrorMapper'}
+  /root-exports/base-path-token:
+    get:
+      operationId: getRootBasePathToken
+      tags: [RuntimeExports]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NG_OPENAPI_SIGNALS_BASE_PATH'}
+  /root-exports/api-middleware:
+    get:
+      # `ApiMiddleware` (and its siblings) exist only in the `fetch` providers
+      # module. The rename is configuration-independent, so the declaration is
+      # still renamed in an `httpClient` pass.
+      operationId: getRootApiMiddleware
+      tags: [RuntimeExports]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiMiddleware'}
+  /root-exports/mutation-status:
+    get:
+      # `mutation-utils.ts` is emitted only with `runtime.signalMutations`; the
+      # name is renamed regardless.
+      operationId: getRootMutationStatus
+      tags: [RuntimeExports]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MutationStatus'}
+components:
+  schemas:
+    Record:
+      type: object
+      additionalProperties:
+        type: string
+    # Bindings the resource template imports. `Service` collides with
+    # `@angular/core`, `Mutation` with `../mutation-utils` (the latter only
+    # when `runtime.signalMutations` is enabled); both are renamed regardless
+    # of configuration so the emitted names do not depend on generator options.
+    # The same holds for the other seven names below — each is `$ref`'d from an
+    # operation in the `Bindings` group, so deleting one from
+    # `RESERVED_RESOURCE_BINDING_NAMES` fails a test instead of passing green.
+    Service:
+      type: object
+      properties:
+        name: {type: string}
+    Mutation:
+      type: object
+      properties:
+        id: {type: string}
+    inject:
+      type: object
+      properties:
+        provider: {type: string}
+    resource:
+      type: object
+      properties:
+        params: {type: string}
+    ApiFetchClient:
+      type: object
+      properties:
+        baseUrl: {type: string}
+    ApiHttpClient:
+      type: object
+      properties:
+        baseUrl: {type: string}
+    readSignalOrValue:
+      type: object
+      properties:
+        signal: {type: string}
+    MaybeSignal:
+      type: object
+      properties:
+        current: {type: string}
+    createMutation:
+      type: object
+      properties:
+        name: {type: string}
+    # The counter-example: `Error` is a *runtime-only* global (the generator
+    # never emits it in a type expression), so the declaration must keep its
+    # name. Widening the reserved sets to "every global" would rename it.
+    Error:
+      type: object
+      properties:
+        message: {type: string}
+    Promise:
+      type: object
+      properties:
+        value: {type: string}
+    Blob:
+      type: object
+      properties:
+        size: {type: number}
+    ReadableStream:
+      type: object
+      properties:
+        locked: {type: boolean}
+    Uint8Array:
+      type: object
+      properties:
+        length: {type: integer}
+    AbortSignal:
+      type: object
+      properties:
+        aborted: {type: boolean}
+    # Not emitted by the generator (`format: binary` renders `Blob`, there is no
+    # `arrayBuffer` parser for schemas), so these must stay importable.
+    File:
+      type: object
+      properties:
+        name: {type: string}
+    ArrayBuffer:
+      type: object
+      properties:
+        byteLength: {type: integer}
+    # Emitted only by the runtime modules, which never import models, so these
+    # declarations must stay importable under their own names.
+    FormData:
+      type: object
+      properties:
+        field: {type: string}
+    URLSearchParams:
+      type: object
+      properties:
+        query: {type: string}
+    # Root-barrel collisions: module-level exports of the generated runtime
+    # modules (`providers.ts`, `api-error.ts`, the client, `signal-utils.ts`,
+    # `mutation-utils.ts`, `date-utils.ts`). Declaring one of these names is legal
+    # and every generated *module* still compiles; the duplicate only appears at
+    # the package entry point, where `index.ts` re-exports the runtime module and
+    # `./models` under the same name — TS2308 for every consumer of the package.
+    #
+    # The list mirrors `RESERVED_ROOT_EXPORT_NAMES` exhaustively (union over both
+    # transports and over `signalMutations`/`dateTransformer`), so adding a new
+    # runtime export without listing it here — or dropping an entry from the set —
+    # turns either the declaration test or the barrel disjointness test red. The
+    # `ApiError`, `ApiRequestOptions`, `transformDates` and
+    # `provideNgOpenapiSignals` schemas are `$ref`'d from the `RuntimeExports`
+    # group above and therefore also imported by a resource file; the rest exist
+    # to prove the rename.
+    ApiError:
+      type: object
+      properties:
+        message: {type: string}
+    ApiNetworkError:
+      type: object
+      properties:
+        url: {type: string}
+    toApiError:
+      type: object
+      properties:
+        status: {type: integer}
+    toApiErrorFromHttpErrorResponse:
+      type: object
+      properties:
+        status: {type: integer}
+    ApiRequestOptions:
+      type: object
+      properties:
+        path: {type: string}
+    QueryParamOptions:
+      type: object
+      properties:
+        style: {type: string}
+    transformDates:
+      type: object
+      properties:
+        date: {type: string}
+    provideNgOpenapiSignals:
+      type: object
+      properties:
+        basePath: {type: string}
+    ApiRequestContext:
+      type: object
+      properties:
+        url: {type: string}
+    ApiErrorMapper:
+      type: object
+      properties:
+        mapped: {type: boolean}
+    NG_OPENAPI_SIGNALS_BASE_PATH:
+      type: object
+      properties:
+        token: {type: string}
+    ApiMiddleware:
+      type: object
+      properties:
+        name: {type: string}
+    MutationStatus:
+      type: object
+      properties:
+        status: {type: string}
+    # Remaining `RESERVED_ROOT_EXPORT_NAMES` entries (`providers` tokens and
+    # hooks; the client and `signal-utils` exports are already declared above as
+    # `RESERVED_RESOURCE_BINDING_NAMES` members). Declared for completeness so
+    # the barrel is checked against the full union.
+    NG_OPENAPI_SIGNALS_MIDDLEWARE:
+      type: object
+      properties:
+        tokens: {type: integer}
+    NG_OPENAPI_SIGNALS_AUTH:
+      type: object
+      properties:
+        scheme: {type: string}
+    NG_OPENAPI_SIGNALS_DEFAULT_HEADERS:
+      type: object
+      properties:
+        headers: {type: integer}
+    NG_OPENAPI_SIGNALS_ERROR_MAPPER:
+      type: object
+      properties:
+        mapper: {type: boolean}
+    NG_OPENAPI_SIGNALS_REQUEST_HOOK:
+      type: object
+      properties:
+        hook: {type: string}
+    NG_OPENAPI_SIGNALS_RESPONSE_HOOK:
+      type: object
+      properties:
+        hook: {type: string}
+    NG_OPENAPI_SIGNALS_TIMEOUT:
+      type: object
+      properties:
+        ms: {type: integer}
+    ApiAuthHook:
+      type: object
+      properties:
+        auth: {type: boolean}
+    ApiRequestHook:
+      type: object
+      properties:
+        hook: {type: string}
+    ApiResponseHook:
+      type: object
+      properties:
+        hook: {type: string}
+    NgOpenapiSignalsOptions:
+      type: object
+      properties:
+        basePath: {type: string}
+    ApiMiddlewareFn:
+      type: object
+      properties:
+        fn: {type: boolean}
+    ApiMiddlewareEntry:
+      type: object
+      properties:
+        entry: {type: boolean}
+    # Global *value*, not a type the generator emits: `import type` leaves the
+    # value namespace (and therefore `String(...)`) untouched.
+    String:
+      type: object
+      properties:
+        value: {type: string}
+    # Ordinary business names must keep their spelling.
+    RecordHolder:
+      type: object
+      properties:
+        record: {$ref: '#/components/schemas/Record'}
+    record:
+      type: object
+      properties:
+        id: {type: string}

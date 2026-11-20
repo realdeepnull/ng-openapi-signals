@@ -112,11 +112,29 @@ interface ClientDeps {
   errorMapper?: ApiErrorMapper;
   onRequest?: ApiRequestHook;
   onResponse?: ApiResponseHook;
+  timeoutMs?: number;
   http: {request: (...args: unknown[]) => unknown};
 }
 
 function separatorFor(style: 'form' | 'spaceDelimited' | 'pipeDelimited' | 'deepObject'): string {
   return style === 'spaceDelimited' ? ' ' : style === 'pipeDelimited' ? '|' : ',';
+}
+
+function serializeScalar(key: string, value: unknown, style: string): string {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => serializeScalar(key, item, style))
+      .join(separatorFor(style as 'form'));
+  }
+
+  if (typeof value === 'object' && value !== null) {
+    throw new TypeError(
+      `Query parameter '${key}' is a nested object, which no OpenAPI query style can serialize. ` +
+        `Flatten it, or send it in the request body.`,
+    );
+  }
+
+  return String(value);
 }
 
 function appendQueryParam(
@@ -129,10 +147,13 @@ function appendQueryParam(
   if (Array.isArray(value)) {
     if (explode) {
       for (const item of value) {
-        url.searchParams.append(key, String(item));
+        url.searchParams.append(key, serializeScalar(key, item, style));
       }
     } else {
-      url.searchParams.set(key, value.map((v) => String(v)).join(separatorFor(style)));
+      url.searchParams.set(
+        key,
+        value.map((v) => serializeScalar(key, v, style)).join(separatorFor(style)),
+      );
     }
     return;
   }
@@ -142,14 +163,14 @@ function appendQueryParam(
 
     if (style === 'deepObject') {
       for (const [prop, val] of entries) {
-        url.searchParams.append(`${key}[${prop}]`, String(val));
+        url.searchParams.append(`${key}[${prop}]`, serializeScalar(`${key}[${prop}]`, val, style));
       }
       return;
     }
 
     if (explode) {
       for (const [prop, val] of entries) {
-        url.searchParams.append(prop, String(val));
+        url.searchParams.append(prop, serializeScalar(prop, val, style));
       }
       return;
     }
@@ -157,19 +178,58 @@ function appendQueryParam(
     const sep = separatorFor(style);
     url.searchParams.set(
       key,
-      entries.map(([prop, val]) => `${prop}${sep}${String(val)}`).join(sep),
+      entries.map(([prop, val]) => `${prop}${sep}${serializeScalar(prop, val, style)}`).join(sep),
     );
     return;
   }
 
-  url.searchParams.set(key, String(value));
+  url.searchParams.set(key, serializeScalar(key, value, style));
 }
 function buildUrl(
   baseUrl: string,
   path: string,
   query?: Record<string, unknown | QueryParamOptions>,
 ): string {
-  const url = new URL(path, baseUrl);
+  const normalizedPath = path.startsWith('/') ? path : '/' + path;
+  const resolvedBase = baseUrl || (typeof document === 'undefined' ? '' : document.baseURI);
+
+  if (resolvedBase.startsWith('//') || /[?#]/.test(resolvedBase)) {
+    const joined = new URL(resolvedBase, 'http://localhost');
+    joined.pathname = `${joined.pathname.replace(/\/+$/, '')}${normalizedPath}`;
+
+    for (const [key, raw] of Object.entries(query ?? {})) {
+      if (raw === undefined || raw === null) {
+        continue;
+      }
+      const isWrapped =
+        typeof raw === 'object' &&
+        raw !== null &&
+        !Array.isArray(raw) &&
+        'value' in raw &&
+        'style' in raw;
+
+      if (isWrapped) {
+        const opts = raw as QueryParamOptions;
+        if (opts.value === undefined || opts.value === null) {
+          continue;
+        }
+        appendQueryParam(joined, key, opts.value, opts.style, opts.explode);
+      } else {
+        appendQueryParam(joined, key, raw, 'form', true);
+      }
+    }
+
+    if (resolvedBase.startsWith('//')) {
+      return joined.toString().slice('http:'.length);
+    }
+
+    return joined.toString();
+  }
+
+  const base = resolvedBase.replace(/\/+$/, '');
+  const joined = base + normalizedPath;
+  const isAbsolute = /^[a-z][a-z0-9+.-]*:\/\//i.test(joined);
+  const url = isAbsolute ? new URL(joined) : new URL(joined, 'http://localhost');
 
   for (const [key, raw] of Object.entries(query ?? {})) {
     if (raw === undefined || raw === null) {
@@ -194,7 +254,7 @@ function buildUrl(
     }
   }
 
-  return url.toString();
+  return isAbsolute ? url.toString() : url.toString().slice('http://localhost'.length);
 }
 
 function mapResponseType(
@@ -215,6 +275,11 @@ function mapResponseType(
 
 function toApiErrorFromHttpErrorResponse(error: HttpErrorResponseStub): ApiError {
   return new ApiError(error.status, '', error.error, error.headers);
+}
+
+/** Mirrors the generated `isAbortLike()` helper. */
+function isAbortLike(error: unknown): boolean {
+  return error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError');
 }
 
 function prepareBody(options: ApiRequestOptions): {body: unknown; contentType: string | undefined} {
@@ -289,6 +354,9 @@ function createClient(deps: ClientDeps) {
 
     const responseType = mapResponseType(options.responseType);
 
+    // Angular's `HttpClient` has no `signal` option — it only knows `timeout`.
+    const timeoutOption = deps.timeoutMs && deps.timeoutMs > 0 ? {timeout: deps.timeoutMs} : {};
+
     try {
       const observable = (await deps.http.request(context.method, context.url, {
         headers: context.headers,
@@ -297,7 +365,7 @@ function createClient(deps: ClientDeps) {
         ...(responseType
           ? {responseType: responseType as 'json' | 'text' | 'blob' | 'arraybuffer'}
           : {}),
-        ...(options.signal ? {signal: options.signal} : {}),
+        ...timeoutOption,
       })) as ObservableStub<unknown>;
       const response = (await observable.toPromise()) as HttpResponseStub<unknown>;
 
@@ -311,9 +379,21 @@ function createClient(deps: ClientDeps) {
 
       return response.body as T;
     } catch (error) {
+      // Aborts and timeouts arrive as the DOMException itself or inside an
+      // `HttpErrorResponse`; re-throw unchanged so `error.name` survives.
+      if (isAbortLike(error)) {
+        throw error;
+      }
+
       if (error && typeof error === 'object' && 'status' in error && 'statusText' in error) {
+        const responseError = (error as HttpErrorResponseStub).error;
+        if (isAbortLike(responseError)) {
+          throw responseError;
+        }
+
         throw await errorMapper(error as HttpErrorResponseStub);
       }
+
       throw error;
     }
   }
@@ -365,6 +445,39 @@ describe('ApiHttpClient request logic', () => {
       const url = buildUrl(baseUrl, '/users', {tags: ['admin', 'active']});
       expect(url).toContain('tags=admin');
       expect(url).toContain('tags=active');
+    });
+
+    it('keeps the last base segment of an absolute base path', () => {
+      expect(buildUrl('https://h/api', '/events')).toBe('https://h/api/events');
+      expect(buildUrl('https://h/api/', '/events')).toBe('https://h/api/events');
+    });
+
+    it('supports a root-relative base path without document (SSR)', () => {
+      // Previously threw `Invalid URL`; the request URL must stay relative.
+      expect(buildUrl('/api', '/events')).toBe('/api/events');
+    });
+
+    it('supports an empty base path without document (SSR)', () => {
+      expect(buildUrl('', '/events')).toBe('/events');
+    });
+
+    it('keeps a protocol-relative base intact', () => {
+      // Previously mangled into `le.com/api/events` because `//cdn...` fails
+      // the absolute-URL regex and was treated as a relative path.
+      expect(buildUrl('//cdn.example.com/api', '/events', {q: 'a b'})).toBe(
+        '//cdn.example.com/api/events?q=a+b',
+      );
+    });
+
+    it('keeps a query or fragment in the base before the path', () => {
+      // Naive concatenation produced `https://h/api?x=1/events`, turning the
+      // path into part of the query value.
+      expect(buildUrl('https://h/api?x=1', '/events', {q: 'a b'})).toBe(
+        'https://h/api/events?x=1&q=a+b',
+      );
+      expect(buildUrl('https://h/api#f', '/events', {q: 'a b'})).toBe(
+        'https://h/api/events?q=a+b#f',
+      );
     });
   });
 
@@ -537,6 +650,58 @@ describe('ApiHttpClient request logic', () => {
       });
 
       await expect(client.request({method: 'GET', path: '/secret'})).rejects.toThrow('Custom 403');
+    });
+
+    it('passes timeoutMs as the native timeout option, not signal', async () => {
+      const response = httpResponse({ok: true}, 200);
+      const http = mockHttp(response);
+      const client = createClient({baseUrl, timeoutMs: 5000, http});
+
+      await client.request({method: 'GET', path: '/slow'});
+
+      const options = (http.request as ReturnType<typeof vi.fn>).mock.calls[0]?.[2] as Record<
+        string,
+        unknown
+      >;
+      // `HttpRequestOptions` has no `signal`; Angular reads only `timeout`.
+      expect(options).toHaveProperty('timeout', 5000);
+      expect(options).not.toHaveProperty('signal');
+    });
+
+    it('omits the timeout option when timeoutMs is 0', async () => {
+      const response = httpResponse({ok: true}, 200);
+      const http = mockHttp(response);
+      const client = createClient({baseUrl, timeoutMs: 0, http});
+
+      await client.request({method: 'GET', path: '/slow'});
+
+      const options = (http.request as ReturnType<typeof vi.fn>).mock.calls[0]?.[2] as Record<
+        string,
+        unknown
+      >;
+      expect(options).not.toHaveProperty('timeout');
+    });
+
+    it('rethrows a TimeoutError instead of wrapping it in ApiError', async () => {
+      // Angular's fetch backend aborts with DOMException('signal timed out',
+      // 'TimeoutError') and wraps it in HttpErrorResponse.
+      const timeout = new DOMException('signal timed out', 'TimeoutError');
+      const client = createClient({baseUrl, http: mockHttpError(httpError(0, '', timeout))});
+
+      const error = await client.request({method: 'GET', path: '/slow'}).catch((thrown) => thrown);
+
+      expect((error as Error).name).toBe('TimeoutError');
+      expect(error).not.toBeInstanceOf(ApiError);
+    });
+
+    it('rethrows an AbortError from a caller signal', async () => {
+      const abort = new DOMException('The user aborted a request.', 'AbortError');
+      const client = createClient({baseUrl, http: mockHttpError(httpError(0, '', abort))});
+
+      const error = await client.request({method: 'GET', path: '/slow'}).catch((thrown) => thrown);
+
+      expect((error as Error).name).toBe('AbortError');
+      expect(error).not.toBeInstanceOf(ApiError);
     });
   });
 

@@ -69,8 +69,42 @@ describe('checkFiles', () => {
     const result = await checkFiles(BASE_CONFIG);
 
     expect(result.stale).toContain('models/stale-extra.ts');
-    // Stale files do not fail the check.
+    // Stale files do not fail the check by default …
     expect(checkPassed(result)).toBe(true);
+    // … but a CI gate can opt in.
+    expect(checkPassed(result, true)).toBe(false);
+  });
+
+  it('does not report CRLF line endings as outdated', async () => {
+    await generate(BASE_CONFIG);
+
+    const filePath = join(OUTPUT_DIR, 'providers.ts');
+    const lfContent = await readFile(filePath, 'utf8');
+
+    // Simulate a `core.autocrlf=true` Windows checkout.
+    await writeFile(filePath, lfContent.replace(/\n/g, '\r\n'), 'utf8');
+
+    const result = await checkFiles(BASE_CONFIG);
+
+    expect(result.outdated).not.toContain('providers.ts');
+    expect(result.outdatedEol).toContain('providers.ts');
+    // Content is identical, so the check must pass.
+    expect(checkPassed(result)).toBe(true);
+  });
+
+  it('still reports a real content diff as outdated next to CRLF', async () => {
+    await generate(BASE_CONFIG);
+
+    const filePath = join(OUTPUT_DIR, 'providers.ts');
+    const content = await readFile(filePath, 'utf8');
+
+    await writeFile(filePath, content.replace(/\n/g, '\r\n') + '// drift\n', 'utf8');
+
+    const result = await checkFiles(BASE_CONFIG);
+
+    expect(result.outdated).toContain('providers.ts');
+    expect(result.outdatedEol).not.toContain('providers.ts');
+    expect(checkPassed(result)).toBe(false);
   });
 
   it('returns empty result when output directory does not exist', async () => {

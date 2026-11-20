@@ -1,0 +1,71 @@
+openapi: 3.0.3
+info: {title: additionalProperties fixture, version: '1.0'}
+components:
+  schemas:
+    User:
+      type: object
+      properties:
+        id: {type: string}
+    Tag:
+      type: object
+      properties:
+        label: {type: string}
+    # Declared members + typed index signature.
+    MixedWithRefs:
+      type: object
+      required: [owner]
+      properties:
+        owner: {$ref: '#/components/schemas/User'}
+      additionalProperties: {$ref: '#/components/schemas/Tag'}
+    # Declared members + `additionalProperties: false` → closed object.
+    ClosedWithProps:
+      type: object
+      required: [id]
+      properties:
+        id: {type: string}
+      additionalProperties: false
+    # `additionalProperties: false` without any declared member is a closed
+    # *empty* object: `Record<string, never>`, not `{}` (which would accept any
+    # object) and not `Record<string, unknown>`.
+    ClosedEmpty:
+      type: object
+      additionalProperties: false
+    # Declared members + `additionalProperties: true` → open record.
+    OpenWithProps:
+      type: object
+      properties:
+        id: {type: string}
+      additionalProperties: true
+    # No declared members → plain `Record` (must not gain a `{ } &` prefix).
+    PureMap:
+      type: object
+      additionalProperties: {type: number}
+    BareObject:
+      type: object
+    # OpenAPI 3.1 nullable object and a schema without an explicit `type`:
+    # both are object-like and must follow the same rule.
+    NullableWithProps:
+      type: [object, 'null']
+      properties:
+        id: {type: string}
+      additionalProperties: {type: number}
+    UntypedWithProps:
+      properties:
+        id: {type: string}
+      additionalProperties: {type: number}
+    # No `additionalProperties` at all → still an interface.
+    PlainInterface:
+      type: object
+      properties:
+        id: {type: string}
+paths:
+  /mixed:
+    get:
+      operationId: getMixed
+      tags: [Records]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MixedWithRefs'}

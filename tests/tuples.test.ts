@@ -20,4 +20,14 @@ describe('tuple generation', () => {
     const content = await readFile(join(OUTPUT_DIR, 'models', 'pair-list.ts'), 'utf8');
     expect(content).toContain('pairs: [string, number];');
   });
+
+  it('imports every model referenced from a tuple member', async () => {
+    // `pair: [User, Tag]` — both members are `$ref`s. A collector without a
+    // tuple branch emitted the references without the imports (TS2304).
+    const content = await readFile(join(OUTPUT_DIR, 'models', 'user-tag-pair.ts'), 'utf8');
+
+    expect(content).toContain('pair: [User, Tag];');
+    expect(content).toContain("import type {Tag} from './tag';");
+    expect(content).toContain("import type {User} from './user';");
+  });
 });

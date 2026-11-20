@@ -81,6 +81,36 @@ function extractMessageTemplate(): string {
 }`;
 }
 
+/**
+ * \`Retry-After\` accessor shared by both transports.
+ *
+ * The header is either a number of seconds or an HTTP date. Returns
+ * \`undefined\` when it is absent, unparseable or already in the past, so
+ * callers can \`if (retryAfter) …\` without extra checks.
+ */
+function retryAfterGetter(): string {
+  return `
+  get retryAfterSeconds(): number | undefined {
+    const raw = this.headers.get('retry-after');
+    if (!raw) {
+      return undefined;
+    }
+
+    const seconds = Number(raw);
+    if (Number.isFinite(seconds)) {
+      return seconds >= 0 ? seconds : undefined;
+    }
+
+    const date = Date.parse(raw);
+    if (Number.isNaN(date)) {
+      return undefined;
+    }
+
+    const delta = Math.ceil((date - Date.now()) / 1000);
+    return delta > 0 ? delta : undefined;
+  }`;
+}
+
 export function generateApiError(config: GeneratorConfig): string {
   const transport = config.runtime?.transport ?? 'fetch';
 
@@ -111,7 +141,7 @@ export class ApiError extends Error {
     this.statusText = statusText;
     this.body = body;
     this.headers = headers;
-  }
+  }${retryAfterGetter()}
 }
 
 export function toApiErrorFromHttpErrorResponse(error: HttpErrorResponse): ApiError {
@@ -149,6 +179,32 @@ export class ApiError extends Error {
     this.statusText = statusText;
     this.body = body;
     this.headers = headers;
+  }${retryAfterGetter()}
+}
+
+/**
+ * Thrown when the request never produced an HTTP response: offline, DNS
+ * failure, CORS rejection, connection reset or a caller abort.
+ *
+ * Extends \`Error\` so Angular's \`resource()\` does not wrap it in
+ * "Resource returned an error that's not an Error instance". \`status\` is \`0\`,
+ * matching \`HttpErrorResponse\` for the same failure — so \`error instanceof
+ * ApiError || error instanceof ApiNetworkError\` covers both transports'
+ * network paths.
+ */
+export class ApiNetworkError extends Error {
+  readonly status = 0;
+  readonly url: string;
+  readonly method: string;
+
+  constructor(url: string, method: string, cause?: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(\`Network request failed: \${method} \${url}\${detail ? ' — ' + detail : ''}\`, {
+      cause,
+    });
+    this.name = 'ApiNetworkError';
+    this.url = url;
+    this.method = method;
   }
 }
 

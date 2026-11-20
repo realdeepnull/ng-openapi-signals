@@ -51,6 +51,10 @@ program
   )
   .option('--dry-run', 'Print the files that would be generated without writing to disk')
   .option('--check', 'Verify generated output is up to date (exits 1 on mismatch; for CI)')
+  .option(
+    '--fail-on-stale',
+    'With --check: also exit 1 when files exist on disk that the spec no longer produces',
+  )
   .option('--verbose', 'Show detailed progress and file lists')
   .action(async (options) => {
     try {
@@ -73,6 +77,10 @@ program
           logger.error(`outdated: ${file}`);
         }
 
+        for (const file of result.outdatedEol) {
+          logger.warn(`outdated (line endings only): ${file}`);
+        }
+
         for (const file of result.missing) {
           logger.error(`missing: ${file}`);
         }
@@ -93,7 +101,19 @@ program
           );
         }
 
-        if (checkPassed(result)) {
+        if (result.outdatedEol.length > 0) {
+          logger.warn(
+            `${result.outdatedEol.length} file(s) differ only in line endings (CRLF vs LF) — content is up to date; 'generate' rewrites them with LF.`,
+          );
+        }
+
+        if (result.stale.length > 0 && !options.failOnStale) {
+          logger.warn(
+            `${result.stale.length} stale file(s) would be removed by 'generate' (clean: true). Pass --fail-on-stale to treat this as a failure.`,
+          );
+        }
+
+        if (checkPassed(result, options.failOnStale === true)) {
           logger.success('Check passed: generated output is up to date.');
         } else {
           process.exitCode = 1;
@@ -104,7 +124,7 @@ program
 
       // --dry-run: generate in memory, list files, no writes.
       if (options.dryRun) {
-        const files = await formatFiles(await generateFiles(config));
+        const files = await formatFiles(await generateFiles(config), config.output);
         const fileCount = Object.keys(files).length;
 
         for (const fileName of Object.keys(files).sort()) {
@@ -124,7 +144,7 @@ program
 
       // Normal generation: generate → format → write once (no double work).
       const files = await generateFiles(config);
-      const formatted = await formatFiles(files);
+      const formatted = await formatFiles(files, config.output);
       await writeFiles(config.output, formatted, config.clean);
 
       const fileCount = Object.keys(formatted).length;

@@ -23,7 +23,7 @@ describe('named schemas with additionalProperties', () => {
 
   it('imports User in users-map.ts', async () => {
     const content = await readFile(join(OUTPUT_DIR, 'models', 'users-map.ts'), 'utf8');
-    expect(content).toContain("import { User } from './index';");
+    expect(content).toContain("import type {User} from './user';");
   });
 
   it('generates Record<string, unknown> type alias for additionalProperties: true', async () => {

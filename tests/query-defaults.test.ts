@@ -28,7 +28,7 @@ describe('runtime.defaultQueryStyle / defaultQueryExplode / preferContentType', 
     // passed as a plain value; with defaultQueryStyle=pipeDelimited it must be
     // wrapped with serialization metadata.
     const content = await readFile(join(OUTPUT_DIR, 'resources', 'query.api.ts'), 'utf8');
-    expect(content).toMatch(/q: \{ value: params\.q, style: 'pipeDelimited', explode: true \}/);
+    expect(content).toMatch(/q: \{value: params\.q, style: 'pipeDelimited', explode: true\}/);
   });
 
   it('keeps spec-explicit styles and only overrides missing ones', async () => {
@@ -59,7 +59,7 @@ describe('runtime.defaultQueryStyle / defaultQueryExplode / preferContentType', 
 
     const content = await readFile(join(OUTPUT_DIR, 'resources', 'query.api.ts'), 'utf8');
     // `q` has no explicit explode → wrapped with explode: false.
-    expect(content).toMatch(/q: \{ value: params\.q, style: 'form', explode: false \}/);
+    expect(content).toMatch(/q: \{value: params\.q, style: 'form', explode: false\}/);
   });
 
   it('passes default-form params as plain values when defaults are unchanged', async () => {
@@ -71,13 +71,12 @@ describe('runtime.defaultQueryStyle / defaultQueryExplode / preferContentType', 
     });
 
     const content = await readFile(join(OUTPUT_DIR, 'resources', 'query.api.ts'), 'utf8');
-    // In the query object of the request (not the params factory, which uses
-    // readSignalOrValue), `q` must be a plain value.
-    const qLine = content
-      .split('\n')
-      .find((line) => line.trim().startsWith('q:') && !line.includes('readSignalOrValue'));
-    expect(qLine).toBeDefined();
-    expect(qLine).toContain('q: params.q');
+    // Look at the request's `query: { ... }` block specifically: the params
+    // factory (above) reads each signal once into a `resolved_*` local, so a
+    // bare `q:` search would hit the wrong block.
+    const queryBlock = content.slice(content.indexOf('query: {'));
+
+    expect(queryBlock).toMatch(/q: params\.q/);
   });
 
   it('selects the preferred content type for request bodies', async () => {

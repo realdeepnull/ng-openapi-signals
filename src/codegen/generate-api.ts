@@ -18,6 +18,7 @@ import {
   uniqueIdentifier,
 } from './naming';
 import {schemaToTsType} from './schema-to-ts';
+import {collectModelReferences} from './model-refs';
 import {isQueryStyle} from './guards';
 import {sanitizeIdentifier, type ModelNames} from './naming';
 import type {
@@ -36,6 +37,61 @@ const HTTP_METHODS: HttpMethod[] = ['get', 'post', 'put', 'patch', 'delete'];
 const DEFAULT_QUERY_STYLE: QueryStyle = 'form';
 /** Default explode per OpenAPI spec: `true` for `form` style query params. */
 const DEFAULT_QUERY_EXPLODE = true;
+
+/**
+ * Merges path-item parameters with operation parameters.
+ *
+ * OpenAPI uniqueness is `(name, in)`, and an operation-level parameter
+ * *overrides* a path-item parameter with the same `(name, in)` pair — it does
+ * not add a second one. Concatenating the two lists instead emitted two
+ * parameter models with the same name, which `assignParamKeys()` disambiguated
+ * (`idQuery` / `idQuery2`) while the wire object stayed keyed by `param.name`
+ * — a duplicate object key (TS1117) from spec-legal input.
+ *
+ * The operation-level entry replaces the path-item entry *in place*, so the
+ * order (and therefore the rendered output) is unchanged when nothing is
+ * overridden. Both inputs must already be `$ref`-resolved.
+ *
+ * A duplicate `(name, in)` *within* `operation.parameters` is spec-invalid;
+ * the last one wins, consistent with the JSON-merge semantics above, giving a
+ * total and deterministic result instead of emitting duplicate keys.
+ */
+function mergeParameters(
+  pathItemParameters: OpenApiParameter[],
+  operationParameters: OpenApiParameter[],
+): OpenApiParameter[] {
+  const index = new Map<string, number>();
+  const merged: OpenApiParameter[] = [];
+
+  for (const parameter of pathItemParameters) {
+    const key = `${parameter.in}\u0000${parameter.name}`;
+    // A duplicate within the path item itself is spec-invalid too; keep the
+    // last one at its first position.
+    const existing = index.get(key);
+
+    if (existing === undefined) {
+      index.set(key, merged.length);
+      merged.push(parameter);
+    } else {
+      merged[existing] = parameter;
+    }
+  }
+
+  for (const parameter of operationParameters) {
+    const key = `${parameter.in}\u0000${parameter.name}`;
+    const existing = index.get(key);
+
+    if (existing === undefined) {
+      index.set(key, merged.length);
+      merged.push(parameter);
+    } else {
+      // Operation-level overrides win, at the path-item position.
+      merged[existing] = parameter;
+    }
+  }
+
+  return merged;
+}
 
 export function extractOperations(
   api: OpenApiDocument,
@@ -75,12 +131,16 @@ export function extractOperations(
         continue;
       }
 
-      const parameters = [
-        ...(pathItem.parameters ?? []),
-        ...(operation.parameters ?? []),
-      ]
+      const pathItemParameters = (pathItem.parameters ?? [])
         .map((parameter) => resolve(parameter, 'parameters'))
         .filter((parameter): parameter is OpenApiParameter => parameter !== undefined);
+      const operationParameters = (operation.parameters ?? [])
+        .map((parameter) => resolve(parameter, 'parameters'))
+        .filter((parameter): parameter is OpenApiParameter => parameter !== undefined);
+
+      // Resolve `$ref`s first: a `$ref`'d path-item parameter and an inline
+      // operation parameter must be compared by their resolved `name`/`in`.
+      const parameters = mergeParameters(pathItemParameters, operationParameters);
 
       const pathParams = parameters
         .filter((parameter) => parameter.in === 'path')
@@ -99,6 +159,11 @@ export function extractOperations(
         .map((parameter) =>
           toParameterModel(parameter, defaultQueryStyle, defaultQueryExplode, names),
         );
+
+      // OpenAPI uniqueness is `(name, in)`, so the same name may legally occur
+      // in several locations. Give every param its public key before any
+      // renderer runs: non-colliding names keep their exact previous key.
+      assignParamKeys(pathParams, queryParams, headerParams);
 
       const requestBody = extractRequestBody(
         resolve(operation.requestBody, 'requestBodies'),
@@ -131,13 +196,21 @@ export function extractOperations(
 export function generateApiFiles(
   operations: OperationModel[],
   config: GeneratorConfig,
+  names: ModelNames,
 ): Record<string, string> {
   const files: Record<string, string> = {};
   const grouped = config.groupBy === 'path' ? groupByPath(operations) : groupByTag(operations);
   const usedFileNames = new Set<string>();
-  const usedClassNames = new Set<string>();
   const exportNames: string[] = [];
   const seenExports = new Set<string>();
+  // The resolved model names are the authoritative answer to "is this
+  // identifier a model?" — the same set `generateModelFiles()` declares. Class
+  // names must be disjoint from this *document-wide* set, because the root
+  // `index.ts` re-exports both barrels — see `uniqueResourceClassName()`.
+  const modelNames: ReadonlySet<string> = new Set(names.values());
+  // This set keeps the generated classes unique across the tree, because
+  // `resources/index.ts` re-exports every one of them.
+  const usedClassNames = new Set<string>();
 
   for (const [group, groupOperations] of Object.entries(grouped)) {
     // `kebabCase()` can collide (`User` vs `user`, or tags differing only in
@@ -145,9 +218,20 @@ export function generateApiFiles(
     // the file name and the service class name must stay unique, otherwise
     // the barrel re-exports two identical members.
     const fileName = uniqueFileName(kebabCase(group), usedFileNames, 'default');
-    const className = uniqueIdentifier(serviceNameFromTag(group), usedClassNames);
+    // The class name must avoid *every* model in the document, not only the
+    // ones this file imports — see `uniqueResourceClassName()`.
+    const className = uniqueResourceClassName(
+      serviceNameFromTag(group),
+      modelNames,
+      usedClassNames,
+    );
 
-    files[`resources/${fileName}.api.ts`] = generateService(className, groupOperations, config);
+    files[`resources/${fileName}.api.ts`] = generateService(
+      className,
+      groupOperations,
+      config,
+      modelNames,
+    );
 
     const exportName = `${fileName}.api`;
     if (!seenExports.has(exportName)) {
@@ -156,8 +240,14 @@ export function generateApiFiles(
     }
   }
 
+  // A barrel with no exports is only comments, which is not a module — the
+  // root `index.ts` re-exports from it and `tsc` then fails with TS2306
+  // ("File ... is not a module"). Specs without any path (or without any
+  // schema) are valid, so emit an explicit empty module instead.
   files['resources/index.ts'] =
-    exportNames.map((name) => `export * from './${name}';`).join('\n') + '\n';
+    exportNames.length > 0
+      ? exportNames.map((name) => `export * from './${name}';`).join('\n') + '\n'
+      : 'export {};\n';
 
   return files;
 }
@@ -166,19 +256,22 @@ function generateService(
   serviceName: string,
   operations: OperationModel[],
   config: GeneratorConfig,
+  modelNames: ReadonlySet<string>,
 ): string {
-  const modelImports = collectModelImports(operations);
+  const modelImports = collectModelImports(operations, modelNames);
   const hasGets = operations.some((op) => op.method === 'get');
-  const hasGetsWithParams = operations.some(
-    (op) =>
-      op.method === 'get' &&
-      op.pathParams.length + op.queryParams.length + op.headerParams.length > 0,
-  );
-  const hasMutationsWithParams = operations.some(
-    (op) =>
-      op.method !== 'get' &&
-      op.pathParams.length + op.queryParams.length + op.headerParams.length > 0,
-  );
+  // `readSignalOrValue` is emitted for GET params factories and for mutation
+  // methods that resolve their params. `MaybeSignal` is referenced by every
+  // params type. Track the two separately: gating the whole import on "has
+  // params" emitted an unused `readSignalOrValue` binding (TS6133 under
+  // `noUnusedLocals`).
+  const callsReadSignalOrValue = operations.some(usesReadSignalOrValue);
+  const referencesMaybeSignal = operations.some((op) => countParams(op) > 0);
+  const signalUtilImport = callsReadSignalOrValue
+    ? `import { readSignalOrValue, type MaybeSignal } from '../signal-utils';\n`
+    : referencesMaybeSignal
+      ? `import type { MaybeSignal } from '../signal-utils';\n`
+      : '';
   const responseTypeHints = config.runtime?.responseTypeHints ?? true;
   const signalMutations = config.runtime?.signalMutations === true;
   const hasMutations = operations.some((op) => op.method !== 'get');
@@ -192,13 +285,9 @@ function generateService(
     angularImports.push('resource');
   }
 
-  const signalUtilImport =
-    hasGetsWithParams || hasMutationsWithParams
-      ? `import { MaybeSignal, readSignalOrValue } from '../signal-utils';\n`
-      : '';
   const mutationUtilImport =
     signalMutations && hasMutations
-      ? `import { Mutation, createMutation } from '../mutation-utils';\n`
+      ? `import { createMutation, type Mutation } from '../mutation-utils';\n`
       : '';
   const modelImportLine = modelImports ? `${modelImports}\n` : '';
 
@@ -261,7 +350,9 @@ function generateResourceMethod(
   const paramsExpression = generateResourceParamsExpression(operation);
   const pathExpression = generatePathExpression(operation);
   const queryExpression = generateQueryExpression(operation);
-  const headerExpression = generateHeaderExpression(operation, false);
+  // The loader's params are already resolved by the factory above, so header
+  // values are read directly from them.
+  const headerExpression = generateHeaderExpression(operation);
   const paramsArg = hasParams ? `params: ${paramsType}` : '';
   const paramsFactory = hasParams
     ? `params: (): ${resourceParamsType} => (${paramsExpression}),`
@@ -335,20 +426,91 @@ ${properties}
   } | undefined`;
 }
 
+/** All parameter models of an operation, in declaration order. */
+function operationParams(operation: OperationModel): ParameterModel[] {
+  return [...operation.pathParams, ...operation.queryParams, ...operation.headerParams];
+}
+
+function countParams(operation: OperationModel): number {
+  return operation.pathParams.length + operation.queryParams.length + operation.headerParams.length;
+}
+
+/**
+ * Params that must be read through `readSignalOrValue()` in a mutation method,
+ * index-aligned with their locals.
+ *
+ * Only params the request actually reads get a local: a path param without a
+ * placeholder in the path template would otherwise be an unused variable.
+ */
+function mutationParamLocals(operation: OperationModel): {
+  params: ParameterModel[];
+  locals: string[];
+} {
+  const params = operationParams(operation);
+  const locals = buildParamLocals(params);
+  const referenced = readPathTemplateParamNames(operation);
+  const readParams: ParameterModel[] = [];
+  const readLocals: string[] = [];
+
+  params.forEach((param, index) => {
+    if (param.location === 'path' && !referenced.has(param.name)) {
+      return;
+    }
+
+    readParams.push(param);
+    readLocals.push(locals[index]!);
+  });
+
+  return {params: readParams, locals: readLocals};
+}
+
+/** Whether the generated method body calls `readSignalOrValue()`. */
+function usesReadSignalOrValue(operation: OperationModel): boolean {
+  return operation.method === 'get'
+    ? countParams(operation) > 0
+    : mutationParamLocals(operation).params.length > 0;
+}
+
 function generateMutationMethod(
   operation: OperationModel,
   methodName: string,
   responseTypeHints: boolean,
 ): string {
-  const hasParams =
-    operation.pathParams.length + operation.queryParams.length + operation.headerParams.length > 0;
+  const params = operationParams(operation);
+  const hasParams = params.length > 0;
   const paramsType = generateParamsType(operation);
   const bodyType = operation.requestBody?.type;
   const bodyParameter = bodyType ? `body: ${bodyType}, ` : '';
-  const paramsParameter = hasParams ? `params: ${paramsType}, ` : '';
-  const pathExpression = generatePathExpression(operation);
-  const queryExpression = generateQueryExpression(operation);
-  const headerExpression = generateHeaderExpression(operation, true);
+
+  // The params are typed `MaybeSignal<T>` (the documented contract), so a
+  // caller may pass a signal. Read each value once into a local before the
+  // request object, exactly like the resource params factory: interpolating
+  // `params.id` straight into the URL would stringify the signal itself
+  // (`[Signal: 42]`).
+  const {params: readParams, locals: readLocals} = mutationParamLocals(operation);
+
+  // A declared path param without a placeholder in the path template keeps its
+  // entry in the params type but is never read, so the whole `params` parameter
+  // is unused — TS6133 under `noUnusedParameters`. The leading underscore keeps
+  // the generated file compiling without changing the positional signature.
+  const paramsParameter = hasParams
+    ? `${readParams.length > 0 ? 'params' : '_params'}: ${paramsType}, `
+    : '';
+
+  const resolvedAccess = new Map(
+    readParams.map((param, index) => [param, readLocals[index]!] as const),
+  );
+  // The resolver receives the *same* model object that the path/query/header
+  // renderers hold, so the lookup is stable; unmapped params fall back to a
+  // direct `params.x` read (the pre-existing behaviour).
+  const resolveParam = (param: ParameterModel): string =>
+    resolvedAccess.get(param) ?? formatParamAccess(param);
+
+  const pathExpression = generatePathExpression(operation, resolveParam);
+  const queryExpression = generateQueryExpression(operation, resolveParam);
+  const headerExpression = generateHeaderExpression(operation, resolveParam);
+  const localLines =
+    readParams.length > 0 ? `${generateParamLocals(readParams, readLocals, '    ')}\n    ` : '';
 
   const requestLines = [`method: '${operation.method.toUpperCase()}',`, `path: ${pathExpression},`];
 
@@ -385,7 +547,7 @@ function generateMutationMethod(
   const requestBody = requestLines.map((line) => `      ${line}`).join('\n');
 
   return `  ${methodName}(${bodyParameter}${paramsParameter}signal?: AbortSignal): Promise<${operation.responseType}> {
-    return this.client.request<${operation.responseType}>({
+    ${localLines}return this.client.request<${operation.responseType}>({
 ${requestBody}
     });
   }`;
@@ -411,23 +573,27 @@ function generateSignalMutationMethod(operation: OperationModel, methodName: str
   const mutationBodyType = bodyType ?? 'void';
 
   // Build the argument list forwarded to the Promise-based method.
-  // Path/query/header params are unwrapped from MaybeSignal before forwarding,
-  // since the Promise method consumes plain (non-signal) values.
+  // Both methods take the same `MaybeSignal` params type and the Promise method
+  // resolves each value at call time, so `params` is forwarded as-is: the
+  // closure keeps binding at construction time and the signal is read exactly
+  // once, when `mutate()` actually dispatches the request.
   const forwardedArgs: string[] = [];
   if (bodyType) {
     forwardedArgs.push('mutationBody');
   }
   if (hasParams) {
-    // Mutations are triggered on demand via `mutate(body)`, so there is no
-    // idle-state concern — always resolve to the concrete (non-undefined)
-    // params object instead of reusing the idle-capable resource expression.
-    forwardedArgs.push(generateResolvedParamsObject(operation));
+    forwardedArgs.push('params');
   }
   forwardedArgs.push('mutationSignal');
   const forwardedCall = forwardedArgs.join(', ');
 
+  // Without a request body the callback's first parameter is never read. The
+  // leading underscore keeps `noUnusedParameters` quiet (generated output must
+  // compile under it) without changing the `createMutation<void, T>` contract.
+  const mutationBodyArg = bodyType ? 'mutationBody' : '_mutationBody';
+
   return `  ${methodName}Mutation(${paramsArg}): Mutation<${mutationBodyType}, ${operation.responseType}> {
-    return createMutation<${mutationBodyType}, ${operation.responseType}>((mutationBody, mutationSignal) =>
+    return createMutation<${mutationBodyType}, ${operation.responseType}>((${mutationBodyArg}, mutationSignal) =>
       this.${methodName}(${forwardedCall}),
     );
   }`;
@@ -461,14 +627,8 @@ function generateResourceParamsExpression(operation: OperationModel): string {
   }
 
   const requiredParams = params.filter((p) => p.required);
-
-  // Build the resolved params object with signals unwrapped.
-  const properties = params
-    .map(
-      (param) =>
-        `        ${formatParamName(param)}: readSignalOrValue(${formatParamAccess(param)})`,
-    )
-    .join(',\n');
+  const locals = buildParamLocals(params);
+  const requiredLocals = requiredParams.map((p) => locals[params.indexOf(p)]);
 
   // When all required params resolve to undefined, return undefined to keep
   // the resource in idle state (no HTTP request). This allows callers to pass
@@ -476,90 +636,160 @@ function generateResourceParamsExpression(operation: OperationModel): string {
   // authentication), preventing premature 401 responses.
   if (requiredParams.length === 0) {
     // No required params — always resolve (optional params can be undefined).
-    return `{
-${properties}
-      }`;
+    // Values are read once into locals so a `computed`/`linkedSignal` with an
+    // expensive derivation is not evaluated twice per read.
+    return `(() => {
+${generateParamLocals(params, locals)}
+        return {
+${renderResolvedParams(params, locals)}
+        };
+      })()`;
   }
 
-  const requiredChecks = requiredParams
-    .map((p) => `readSignalOrValue(${formatParamAccess(p)}) === undefined`)
-    .join(' || ');
-
-  return `(${requiredChecks}) ? undefined : {
-${properties}
-      }`;
+  // Read each param once: the idle-state guard and the returned object would
+  // otherwise evaluate every signal twice.
+  return `(() => {
+${generateParamLocals(params, locals)}
+        if (${requiredLocals.map((local) => `${local} === undefined`).join(' || ')}) {
+          return undefined;
+        }
+        return {
+${renderResolvedParams(params, locals)}
+        };
+      })()`;
 }
 
 /**
- * Builds a resolved (non-signal) params object literal without any idle-state
- * guard. Used by signal mutation methods to forward unwrapped params to the
- * Promise-based method, which always requires a concrete params object.
+ * `const resolved_x = readSignalOrValue(params.x);` for the given params,
+ * index-aligned with `locals` (see {@link buildParamLocals}).
  */
-function generateResolvedParamsObject(operation: OperationModel): string {
-  const params = [...operation.pathParams, ...operation.queryParams, ...operation.headerParams];
-
-  if (params.length === 0) {
-    return 'undefined';
-  }
-
-  const properties = params
+function generateParamLocals(
+  params: ParameterModel[],
+  locals: string[],
+  indent = '        ',
+): string {
+  return params
     .map(
-      (param) =>
-        `        ${formatParamName(param)}: readSignalOrValue(${formatParamAccess(param)})`,
+      (param, index) =>
+        `${indent}const ${locals[index]} = readSignalOrValue(${formatParamAccess(param)});`,
     )
-    .join(',\n');
-
-  return `{
-${properties}
-      }`;
+    .join('\n');
 }
 
-function generatePathExpression(operation: OperationModel): string {
-  const hasParams =
-    [...operation.pathParams, ...operation.queryParams, ...operation.headerParams].length > 0;
+/**
+ * Names of the path params that the path template actually interpolates.
+ *
+ * The path is rendered from the *model* params, but only placeholders present
+ * in the URL are used. Reading the others into locals would leave unused
+ * (`noUnusedLocals`) variables in the mutation method.
+ */
+function readPathTemplateParamNames(operation: OperationModel): Set<string> {
+  const referenced = new Set<string>();
 
-  if (!hasParams) {
+  for (const match of operation.path.matchAll(/\{([^}]+)\}/g)) {
+    referenced.add(match[1]!);
+  }
+
+  return referenced;
+}
+
+/** `${name}: ${local},` entries read from the locals created by the above. */
+function renderResolvedParams(params: ParameterModel[], locals: string[]): string {
+  return params
+    .map((param, index) => `          ${formatParamName(param)}: ${locals[index]}`)
+    .join(',\n');
+}
+
+/**
+ * Local variable names for the resolved params, index-aligned with `params`.
+ *
+ * Prefixed because a param can be named like a reserved word (`default`,
+ * `class`) — valid as a property, invalid as a `const`. Different parameter
+ * names can normalize to the same identifier (`user-id` and `userId` both
+ * become `userId`), which would emit two `const` declarations in the same
+ * block (TS2451), so collisions are suffixed (`resolvedUserId2`).
+ */
+function buildParamLocals(params: ParameterModel[]): string[] {
+  const used = new Set<string>();
+
+  return params.map((param) => {
+    const base = `resolved_${toCamelIdentifier(param.name, 'param')}`;
+
+    if (!used.has(base)) {
+      used.add(base);
+      return base;
+    }
+
+    let counter = 2;
+    while (used.has(`${base}${counter}`)) {
+      counter++;
+    }
+
+    const unique = `${base}${counter}`;
+    used.add(unique);
+    return unique;
+  });
+}
+
+/**
+ * Renders the request path.
+ *
+ * `resolve` supplies the value expression for a parameter: the resolved local
+ * in mutation methods (so a `MaybeSignal` argument is unwrapped) and `params.x`
+ * in resource loaders (where the params object is already resolved).
+ */
+function generatePathExpression(
+  operation: OperationModel,
+  resolve: (param: ParameterModel) => string = (param) => formatParamAccess(param),
+): string {
+  if (countParams(operation) === 0) {
     return JSON.stringify(operation.path);
   }
 
-  // Path templating: `{id}` → `params.id`. Parameter names are looked up in the
-  // model so names that are not valid identifiers (e.g. `{user-id}`) use bracket
-  // notation, and the result is encoded so the URL stays well-formed.
-  const byName = new Map(
-    [...operation.pathParams, ...operation.queryParams, ...operation.headerParams].map((param) => [
-      param.name,
-      param,
-    ]),
-  );
+  // Path templating: `{id}` → the resolved expression. A placeholder can only
+  // refer to a *path* parameter (OpenAPI requires the template and the
+  // `in: path` parameters to match), and names that are not valid identifiers
+  // (e.g. `{user-id}`) are resolved through the model.
+  //
+  // Looking the name up across every location let a query/header parameter
+  // that shares the name shadow the path parameter: uniqueness is
+  // (name, `in`), not name alone. The template would then render the query
+  // param's local and leave the path param's `const` unused (TS6133), and the
+  // query object would silently use the path local. Resolving the declared
+  // path parameter here also means `resolve()` receives the very object the
+  // mutation resolver keyed its local map by (identity, not name).
+  const pathParamsByName = new Map(operation.pathParams.map((param) => [param.name, param]));
 
   const templatePath = operation.path.replace(/\{([^}]+)\}/g, (placeholder, name: string) => {
-    const param = byName.get(name);
+    const pathParam = pathParamsByName.get(name);
 
-    if (!param) {
-      // Not a declared parameter — keep the literal placeholder instead of
-      // emitting a reference to a non-existent property.
+    if (!pathParam) {
+      // Not a declared path parameter — keep the literal placeholder instead
+      // of emitting a reference to a non-existent property.
       return placeholder;
     }
 
-    return `\${encodeURIComponent(String(${formatPropertyAccess('params', name)}))}`;
+    return `\${encodeURIComponent(String(${resolve(pathParam)}))}`;
   });
 
   return '`' + templatePath + '`';
 }
 
 /**
- * Formats a parameter name for use as a TypeScript property name.
+ * Formats a parameter's public property name for a params type/object.
  *
  * Parameter names are free-form in OpenAPI (`X-Request-Id`, `filter[name]`,
- * `user-id`), so any name that is not a valid identifier is quoted.
+ * `user-id`), so any name that is not a valid identifier is quoted. The
+ * rendered key is {@link ParameterModel.key}: the verbatim name unless the
+ * same name also occurs in another location (see `assignParamKeys()`).
  */
 function formatParamName(param: ParameterModel): string {
-  return formatPropertyName(param.name);
+  return formatPropertyName(param.key);
 }
 
 /** Formats a parameter access expression (`params.id` / `params['user-id']`). */
 function formatParamAccess(param: ParameterModel): string {
-  return formatPropertyAccess('params', param.name);
+  return formatPropertyAccess('params', param.key);
 }
 
 /**
@@ -571,23 +801,30 @@ function formatParamAccess(param: ParameterModel): string {
  * Params using the spec default are passed as plain values (the runtime
  * treats them as form+explode:true).
  */
-function generateQueryExpression(operation: OperationModel): string {
+function generateQueryExpression(
+  operation: OperationModel,
+  resolve: (param: ParameterModel) => string = (param) => formatParamAccess(param),
+): string {
   if (operation.queryParams.length === 0) {
     return '';
   }
 
   const properties = operation.queryParams
     .map((param) => {
+      // The object *key* is the wire-level query name from the spec and must
+      // stay verbatim; only the value (`resolve`) uses the public params key,
+      // which may be location-suffixed (see `assignParamKeys()`).
+      const wireName = formatPropertyName(param.name);
       // The runtime's implicit default (no metadata) is form + explode:true.
       const isRuntimeDefault = !param.style && param.explode === undefined;
 
       if (isRuntimeDefault) {
-        return `            ${formatPropertyName(param.name)}: ${formatParamAccess(param)}`;
+        return `            ${wireName}: ${resolve(param)}`;
       }
 
       const style = param.style ?? DEFAULT_QUERY_STYLE;
       const explode = param.explode ?? DEFAULT_QUERY_EXPLODE;
-      return `            ${formatPropertyName(param.name)}: { value: ${formatParamAccess(param)}, style: '${style}', explode: ${explode} }`;
+      return `            ${wireName}: { value: ${resolve(param)}, style: '${style}', explode: ${explode} }`;
     })
     .join(',\n');
 
@@ -600,17 +837,18 @@ ${properties}
  * Generates a headers object expression for header parameters.
  * Returns empty string if there are no header parameters.
  */
-function generateHeaderExpression(operation: OperationModel, unwrapSignals = false): string {
+function generateHeaderExpression(
+  operation: OperationModel,
+  resolve: (param: ParameterModel) => string = (param) => formatParamAccess(param),
+): string {
   if (operation.headerParams.length === 0) {
     return '';
   }
 
   const properties = operation.headerParams
-    .map((param) => {
-      const access = formatParamAccess(param);
-      const value = unwrapSignals ? `readSignalOrValue(${access})` : access;
-      return `            ${formatPropertyName(param.name)}: ${value}`;
-    })
+    // The header name is the wire name and stays verbatim; `resolve` reads the
+    // public params key, which may be location-suffixed.
+    .map((param) => `            ${formatPropertyName(param.name)}: ${resolve(param)}`)
     .join(',\n');
 
   return `{
@@ -640,11 +878,86 @@ function toParameterModel(
     location: parameter.in as ParameterModel['location'],
     required: Boolean(parameter.required),
     type: schemaToTsType(parameter.schema, names),
+    // Defaults to the verbatim name; `assignParamKeys()` changes it only when
+    // the same name occurs in another location.
+    key: parameter.name,
     ...(isQuery && style !== DEFAULT_QUERY_STYLE
       ? {style}
       : {}),
     ...(isQuery && explode !== DEFAULT_QUERY_EXPLODE ? {explode} : {}),
   };
+}
+
+/** Suffix appended to a parameter name that occurs in more than one location. */
+const LOCATION_SUFFIX: Record<ParameterModel['location'], string> = {
+  path: 'Path',
+  query: 'Query',
+  header: 'Header',
+};
+
+/**
+ * Assigns the public property key of every parameter model of one operation.
+ *
+ * OpenAPI only requires `(name, in)` pairs to be unique, so `/users/{id}` may
+ * legally declare `id` both as a path and as a query parameter. Keying the
+ * params type by `name` alone emitted duplicate property keys — TS2300 /
+ * TS2687 / TS2717 in the type, TS1117 in the resolved object literal — while
+ * the CLI exited 0.
+ *
+ * A name that occurs once keeps its exact previous key (the verbatim name, so
+ * non-colliding output stays byte-identical and no public API is renamed).
+ * Only colliding names get a location suffix (`idPath`, `idQuery`,
+ * `idHeader`); `formatPropertyName()` still quotes them when the result is not
+ * a valid identifier. The resolved `resolved_*` locals are deliberately *not*
+ * derived from this key — they keep deduplicating on `name` (see
+ * `buildParamLocals()`).
+ */
+function assignParamKeys(...groups: ParameterModel[][]): void {
+  const counts = new Map<string, number>();
+
+  for (const group of groups) {
+    for (const param of group) {
+      counts.set(param.name, (counts.get(param.name) ?? 0) + 1);
+    }
+  }
+
+  // Reserve every non-colliding name first. A suffixed key may then collide
+  // with a parameter that is literally called `idPath`, and that parameter
+  // keeps its name instead of being renamed by someone else's collision.
+  const used = new Set<string>();
+
+  for (const group of groups) {
+    for (const param of group) {
+      if ((counts.get(param.name) ?? 0) === 1) {
+        used.add(param.name);
+      }
+    }
+  }
+
+  // `id` in two locations plus a parameter literally named `idPath`: such a
+  // spec produced duplicate keys before the suffix rule existed too, so
+  // deduping it cannot rename a working API — it only keeps the output
+  // compilable.
+  for (const group of groups) {
+    for (const param of group) {
+      if ((counts.get(param.name) ?? 0) === 1) {
+        param.key = param.name;
+        continue;
+      }
+
+      const base = `${param.name}${LOCATION_SUFFIX[param.location]}`;
+      let key = base;
+      let counter = 2;
+
+      while (used.has(key)) {
+        key = `${base}${counter}`;
+        counter++;
+      }
+
+      used.add(key);
+      param.key = key;
+    }
+  }
 }
 
 function extractResponseType(
@@ -964,15 +1277,26 @@ function methodVerbPrefix(method: HttpMethod): string {
   }
 }
 
-function collectModelImports(operations: OperationModel[]): string {
+/**
+ * The model names a single `resources/*.api.ts` file imports, i.e. every
+ * declared model referenced by one of the group's operations.
+ *
+ * This is the one definition of "which models does this module bind", used by
+ * the import renderer below. It is deliberately *not* the class-name collision
+ * rule: that one is document-wide (see {@link uniqueResourceClassName()}).
+ */
+function collectModelNamesForOperations(
+  operations: OperationModel[],
+  modelNames: ReadonlySet<string>,
+): Set<string> {
   const types = new Set<string>();
 
   for (const operation of operations) {
-    collectType(operation.responseType, types);
+    collectModelReferences(operation.responseType, modelNames, types);
 
     const bodyType = operation.requestBody?.type;
     if (bodyType) {
-      collectType(bodyType, types);
+      collectModelReferences(bodyType, modelNames, types);
     }
 
     for (const param of [
@@ -980,96 +1304,69 @@ function collectModelImports(operations: OperationModel[]): string {
       ...operation.queryParams,
       ...operation.headerParams,
     ]) {
-      collectType(param.type, types);
+      collectModelReferences(param.type, modelNames, types);
     }
   }
+
+  return types;
+}
+
+/**
+ * Resolves a service class name that collides with no other generated name.
+ *
+ * Two constraints, both document-wide:
+ *
+ * 1. Class names must be unique across the whole tree, because
+ *    `resources/index.ts` re-exports every `resources/*.api.ts` module — two
+ *    classes with one name are a duplicate export (TS2308) at the barrel.
+ * 2. Class names must not equal *any* model name in the document, because the
+ *    generated root `index.ts` re-exports both `./models` and `./resources`. Two
+ *    `export *` of the same name is TS2308 ("Module './models' has already
+ *    exported a member named 'X'"), regardless of whether the model is imported
+ *    by the group whose class collides. It is therefore *not* enough to avoid
+ *    the model names the group's own file imports — a schema `OrdersApi`
+ *    anywhere in the document forbids a class of that name for any tag.
+ *
+ * The numeric suffix is applied in generation order (declaration order), so the
+ * result stays deterministic for a given spec. The class is renamed rather than
+ * the model: the class name is synthesized by the generator and therefore not a
+ * public-API promise, whereas renaming the user's schema would be.
+ *
+ * The runtime exports (`RESERVED_ROOT_EXPORT_NAMES`: `ApiError`,
+ * `provideNgOpenapiSignals`, `transformDates`, …) need no entry here:
+ * `serviceNameFromTag()` always appends `Api`, and no runtime export ends in
+ * `Api`, so a derived class name can never equal one. Renaming the models away
+ * from those names is what keeps the two barrels disjoint.
+ */
+function uniqueResourceClassName(
+  base: string,
+  modelNames: ReadonlySet<string>,
+  usedClassNames: Set<string>,
+): string {
+  // `uniqueIdentifier()` has no "taken" parameter, so hold the forbidden names
+  // in `used` for the duration of the call: it then skips exactly the document's
+  // model names, plus every class taken before.
+  const taken: Set<string> = new Set([...usedClassNames, ...modelNames]);
+  const className = uniqueIdentifier(base, taken);
+
+  usedClassNames.add(className);
+  return className;
+}
+
+function collectModelImports(
+  operations: OperationModel[],
+  modelNames: ReadonlySet<string>,
+): string {
+  const types = collectModelNamesForOperations(operations, modelNames);
 
   if (types.size === 0) {
     return '';
   }
 
-  return `import { ${Array.from(types).sort().join(', ')} } from '../models';`;
-}
-
-function collectType(type: string, output: Set<string>): void {
-  if (!type) {
-    return;
-  }
-
-  // Unwrap a single surrounding pair of parentheses so that array-of-union
-  // types like `('A' | 'B' | 'C')[]` are recursed into correctly: strip `[]`
-  // first → `('A' | 'B' | 'C')` → unwrap parens → union split branch.
-  if (type.startsWith('(') && type.endsWith(')')) {
-    type = type.slice(1, -1);
-  }
-
-  const primitives = new Set([
-    'string',
-    'number',
-    'boolean',
-    'void',
-    'unknown',
-    'null',
-    'Record<string, unknown>',
-    'Uint8Array',
-    // Browser built-in types — never imported from generated models.
-    'Blob',
-    'ArrayBuffer',
-    'File',
-    'FormData',
-    'ReadableStream',
-    'ReadableStream<Uint8Array>',
-    'ReadableStream<Uint8Array> | null',
-    'URLSearchParams',
-  ]);
-
-  // Generic built-ins (e.g. `ReadableStream<Uint8Array>`) — strip the type
-  // arguments so the union-split branch doesn't mistake the wrapper for a
-  // model import.
-  const genericBuiltin = /^([A-Za-z_$][\w$]*)<.*>$/.exec(type);
-  if (genericBuiltin && primitives.has(genericBuiltin[1]!)) {
-    return;
-  }
-
-  if (primitives.has(type)) {
-    return;
-  }
-
-  if (type.endsWith('[]')) {
-    collectType(type.slice(0, -2), output);
-    return;
-  }
-
-  if (type.startsWith('Record<string, ') && type.endsWith('>')) {
-    const inner = type.slice('Record<string, '.length, -1);
-    collectType(inner, output);
-    return;
-  }
-
-  if (type.includes(' | ') || type.includes(' & ')) {
-    for (const part of type.split(/[ |&]+/)) {
-      collectType(part.trim(), output);
-    }
-    return;
-  }
-
-  if (type.startsWith('"') || type.startsWith("'")) {
-    return;
-  }
-
-  // Inline object type literal — no imports needed.
-  if (type.startsWith('{')) {
-    return;
-  }
-
-  // Tuple type — recurse into elements.
-  if (type.startsWith('[') && type.endsWith(']')) {
-    const inner = type.slice(1, -1);
-    for (const part of inner.split(', ')) {
-      collectType(part.trim(), output);
-    }
-    return;
-  }
-
-  output.add(type);
+  // Model imports are type-only: every generated model is an `interface` or a
+  // `type` alias (enums are emitted as literal unions), so a value import would
+  // break `verbatimModuleSyntax` (TS1484) for no reason. Names that would
+  // collide with a binding this module already imports never reach this list:
+  // `RESERVED_RESOURCE_BINDING_NAMES` renames them at declaration time.
+  return `import type { ${Array.from(types).sort().join(', ')} } from '../models';`;
 }

@@ -1,0 +1,52 @@
+openapi: 3.0.3
+info:
+  title: Unimported class-name collision fixture
+  version: 1.0.0
+paths:
+  # Tag `Users` derives the class name `UsersApi`. The document also declares a
+  # schema of that name, but *this* group never references it — the schema is
+  # reachable only from `Reports`, so `users.api.ts` never imports it. The class
+  # is still renamed to `UsersApi2`: the generated root `index.ts` re-exports
+  # both `./models` and `./resources`, and two `export *` of the same name is
+  # TS2308 regardless of which module imports the model. The rule is
+  # document-wide, not per-module.
+  #
+  # `Reports` derives `ReportsApi`, which collides with nothing, so it keeps its
+  # name and imports the schema next to it without a clash.
+  /users/{id}:
+    get:
+      operationId: getUser
+      tags: [Users]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+  /reports:
+    get:
+      operationId: getReports
+      tags: [Reports]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsersApi'
+components:
+  schemas:
+    User:
+      type: object
+      properties:
+        id: {type: string}
+    UsersApi:
+      type: object
+      properties:
+        id: {type: string}

@@ -36,7 +36,7 @@ describe('bare type: object schemas (Object shadowing)', () => {
     // the generated service must import the type alias from models and use
     // it as the param type (not the global Object type).
     const content = await readFile(join(OUTPUT_DIR, 'resources', 'ping.api.ts'), 'utf8');
-    expect(content).toContain("import { Object } from '../models';");
+    expect(content).toContain("import type {Object} from '../models';");
     expect(content).toContain('filter?: MaybeSignal<Object>');
   });
 });

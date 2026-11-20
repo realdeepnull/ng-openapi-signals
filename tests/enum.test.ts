@@ -42,7 +42,11 @@ describe('enum generation', () => {
     const content = await readFile(join(OUTPUT_DIR, 'models', 'status-response.ts'), 'utf8');
     expect(content).toContain('status: UserStatus;');
     expect(content).toContain('code: StatusCode;');
-    expect(content).toContain('import { StatusCode, UserStatus } from');
+    // Enums are emitted as `type` aliases, so the import must be type-only and
+    // point at the defining file rather than the barrel. Formatting follows the
+    // project's own Prettier config, hence the compact braces.
+    expect(content).toContain("import type {StatusCode} from './status-code';");
+    expect(content).toContain("import type {UserStatus} from './user-status';");
   });
 
   it('wraps inline enum arrays in parentheses so [] binds to the whole union', async () => {

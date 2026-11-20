@@ -104,7 +104,10 @@ Template:
 
 For endpoints with path/query/header parameters, the parameters are bound at
 construction time (captured in the closure) and accept plain values or signals
-(like the `resource()` variants). Only the request body is passed to `mutate()`:
+(like the `resource()` variants). Only the request body is passed to `mutate()`.
+The signals are read when `mutate()` dispatches the request, and the Promise
+method that `…Mutation()` delegates to accepts the same `MaybeSignal` params,
+so it can be called directly as well:
 
 ```ts
 readonly userId = signal('usr_123');
@@ -117,6 +120,27 @@ upload(): void {
   this.uploading.mutate({ file: this.file, caption: 'Profile photo' });
 }
 ```
+
+Parameter keys are the OpenAPI parameter names, quoted when they are not valid
+identifiers (`'X-Request-Id'`, `'filter[name]'`). OpenAPI only requires
+`(name, in)` to be unique, so the same name may legally appear in several
+locations. When it does, the key is suffixed by location — `idPath`,
+`idQuery`, `idHeader` — to keep the params type unambiguous:
+
+```yaml
+parameters:
+  - {name: id, in: path, required: true, schema: {type: string}}
+  - {name: id, in: query, schema: {type: string}}
+```
+
+```ts
+this.usersApi.getUserResource({idPath: this.userId, idQuery: 'full'});
+```
+
+Names that occur only once keep their verbatim key, so no existing call site
+changes. A location suffix never renames a parameter that is literally called
+that: if the spec also declares a parameter named `idPath`, the literal name
+keeps its key and the colliding parameter becomes `idPath2` instead.
 
 #### Reset
 
@@ -237,11 +261,16 @@ providers: [
 #### Absolute and relative base paths
 
 `basePath` may be absolute (`https://api.example.com/v1`), root-relative
-(`/api` — typical for a dev-server proxy) or empty. Relative values are
-resolved against `document.baseURI`, so the client never calls
-`new URL()` with a relative base (which throws `Invalid URL`). Operation
-paths are always resolved as root-relative, so `/users` replaces the base
-path instead of appending to its last segment.
+(`/api` — typical for a dev-server proxy) or empty. The base is treated as a
+**directory**, so its last segment is preserved: with
+`basePath: 'https://api.example.com/api'` a `/events` operation requests
+`https://api.example.com/api/events`. A trailing slash makes no difference.
+
+Relative values are resolved without a `document` dependency, so server-side
+rendering works: `basePath: '/api'` yields the relative request URL
+`/api/events`, and `basePath: ''` yields `/events`. Previously `new URL()`
+received the relative base directly, which threw `Invalid URL` in SSR and
+silently dropped the `/api` segment.
 
 ```ts
 // Proxy setup: `ng serve` forwards /api to the backend.
@@ -256,19 +285,20 @@ provideNgOpenapiSignals({basePath: ''});
 The runtime sends an `Accept` header derived from the operation's response
 type hint, so non-JSON endpoints are not rejected with `406 Not Acceptable`:
 
-| `responseType` hint     | `Accept`            |
-| ----------------------- | ------------------- |
-| `'json'` (or absent)    | `application/json`  |
-| `'text'`                | `text/*`            |
-| `'stream'`              | `text/event-stream` |
-| `'blob'`/`'arrayBuffer'`| `*/*`               |
+| `responseType` hint      | `Accept`            |
+| ------------------------ | ------------------- |
+| `'json'` (or absent)     | `application/json`  |
+| `'text'`                 | `text/*`            |
+| `'stream'`               | `text/event-stream` |
+| `'blob'`/`'arrayBuffer'` | `*/*`               |
 
 Override it per request via `ApiRequestOptions.headers.Accept`, or globally
 via `defaultHeaders`.
 
 ### `MaybeSignal<T>`
 
-Generated resource methods support both plain values and Angular signals.
+Generated resource _and_ mutation methods accept both plain values and Angular
+signals for path, query and header parameters.
 
 ```ts
 export type MaybeSignal<T> = T | Signal<T>;
@@ -290,21 +320,36 @@ api.getUserByIdResource({
 });
 ```
 
+Both shapes work for the Promise-based mutations too — the method reads each
+parameter once with `readSignalOrValue()` at call time, so a signal is
+dereferenced when the request is dispatched:
+
+```ts
+await api.doAction(body, {id: this.userId, verbose: true});
+await api.doAction(body, {id: this.userId, verbose: this.verbose});
+```
+
 ### Response parsing
 
 Generated methods emit a `responseType` hint derived from the OpenAPI response
 `content` type, so the runtime picks the right parser:
 
-| OpenAPI content type                                           | `responseType` | TypeScript return type                                 |
-| -------------------------------------------------------------- | -------------- | ------------------------------------------------------ |
-| `application/json` (and `*+json`)                              | `'json'`       | inferred from schema                                   |
-| `text/*`                                                       | `'text'`       | `string`                                               |
+| OpenAPI content type                                           | `responseType` | TypeScript return type             |
+| -------------------------------------------------------------- | -------------- | ---------------------------------- |
+| `application/json` (and `*+json`)                              | `'json'`       | inferred from schema               |
+| `text/*`                                                       | `'text'`       | `string`                           |
 | `text/event-stream`                                            | `'stream'`     | fetch: `ReadableStream<Uint8Array> | null`, httpClient: `Blob` |
-| `image/*`, `audio/*`, `video/*`, `octet-stream`, `multipart/*` | `'blob'`       | `Blob`                                                 |
+| `image/*`, `audio/*`, `video/*`, `octet-stream`, `multipart/*` | `'blob'`       | `Blob`                             |
 
 For responses without a known content type the runtime falls back to
 content-type sniffing. Set `runtime.responseTypeHints: false` in the config
 file to disable hints and rely solely on runtime sniffing.
+
+Query parameters whose value cannot be expressed by the declared OpenAPI style
+(a nested object under `form`, `spaceDelimited` or `pipeDelimited`, or a second
+nesting level under `deepObject`) throw a `TypeError` instead of being sent as
+`[object Object]`. Arrays are joined with the style separator, and
+`application/x-www-form-urlencoded` bodies repeat the key per array element.
 
 #### Date Transformer (`runtime.dateTransformer`)
 
@@ -363,12 +408,12 @@ query: {
 The runtime `buildUrl` method serializes according to the style. Arrays and
 objects are flattened per the OpenAPI 3.0.3 style table:
 
-| Style            | `explode: true`                      | `explode: false`                     |
-| ---------------- | ------------------------------------ | ------------------------------------ |
-| `form`           | `key=val1&key=val2` / `R=100&G=200`  | `key=val1,val2` / `color=R,100,G,200` |
-| `spaceDelimited` | `key=val1&key=val2` / `R=100&G=200`  | `key=val1%20val2` / `color=R%20100%20G%20200` |
-| `pipeDelimited`  | `key=val1&key=val2` / `R=100&G=200`  | `key=val1\|val2` / `color=R\|100\|G\|200` |
-| `deepObject`     | `key[prop]=val`                      | `key[prop]=val` (always exploded)    |
+| Style            | `explode: true`                     | `explode: false`                              |
+| ---------------- | ----------------------------------- | --------------------------------------------- |
+| `form`           | `key=val1&key=val2` / `R=100&G=200` | `key=val1,val2` / `color=R,100,G,200`         |
+| `spaceDelimited` | `key=val1&key=val2` / `R=100&G=200` | `key=val1%20val2` / `color=R%20100%20G%20200` |
+| `pipeDelimited`  | `key=val1&key=val2` / `R=100&G=200` | `key=val1\|val2` / `color=R\|100\|G\|200`     |
+| `deepObject`     | `key[prop]=val`                     | `key[prop]=val` (always exploded)             |
 
 Object properties resolving to `undefined` or `null` are omitted.
 
@@ -418,10 +463,50 @@ provideNgOpenapiSignals({
   // Called after a successful response is received.
   onResponse: (res) => console.log('response', res.status),
 
+  // Aborts requests taking longer than this (0 = unbounded, the default).
+  // `fetch` uses AbortSignal.timeout(); `httpClient` uses its native `timeout`
+  // option. Both reject with a `TimeoutError`.
+  timeoutMs: 30_000,
+
   // Replaces the default `toApiError` error mapper.
   errorMapper: async (res) => new MyApiError(await res.json()),
 });
 ```
+
+### Error types
+
+Every rejection from a generated method is an `Error` subclass, so
+`error instanceof Error` holds for all failure modes:
+
+| Failure                              | `fetch` transport               | `httpClient` transport   |
+| ------------------------------------ | ------------------------------- | ------------------------ |
+| Non-2xx response                     | `ApiError`                      | `ApiError`               |
+| Offline, DNS, CORS, connection reset | `ApiNetworkError` (`status: 0`) | `ApiError` (`status: 0`) |
+| Timeout (`timeoutMs`)                | `TimeoutError`                  | `TimeoutError`           |
+| Caller abort (`abortSignal`)         | `AbortError`                    | `AbortError`             |
+
+`ApiError` exposes `status`, `statusText`, `body`, `headers` and a
+`retryAfterSeconds` getter that parses the `Retry-After` header (seconds or
+HTTP date) — handy for a 429 retry loop:
+
+```ts
+try {
+  await api.getEvents();
+} catch (error) {
+  if (error instanceof ApiError && error.retryAfterSeconds) {
+    await new Promise((r) => setTimeout(r, error.retryAfterSeconds! * 1000));
+  }
+}
+```
+
+Timeouts and caller aborts are **not** wrapped by either transport, so
+`error.name` distinguishes them from a network failure: `'TimeoutError'` for a
+timeout, `'AbortError'` for cancellation. `ApiError.name` is always
+`'ApiError'`.
+
+`httpClient` reports network failures as `HttpErrorResponse` with `status: 0`
+through the `errorMapper`, so both transports use `status === 0` for
+"no response".
 
 ## Middleware
 

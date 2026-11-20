@@ -38,3 +38,115 @@ components:
           type:
             - string
             - 'null'
+    # OpenAPI 3.1 nullability through composition. `anyOf: [T, {type: null}]` is
+    # how validators spell `T | null`; the null member renders as `unknown` and
+    # used to be dropped, silently narrowing the property to `T`.
+    AnyOfObject:
+      type: object
+      properties:
+        value:
+          anyOf:
+            - $ref: '#/components/schemas/Item'
+            - type: 'null'
+    RequiredNullable:
+      type: object
+      required:
+        - value
+      properties:
+        value:
+          anyOf:
+            - type: number
+            - type: 'null'
+    DoubleNullable:
+      type: object
+      properties:
+        value:
+          nullable: true
+          anyOf:
+            - type: string
+            - type: 'null'
+    DuplicateNull:
+      type: object
+      properties:
+        value:
+          anyOf:
+            - type: 'null'
+            - type: 'null'
+    NullOnly:
+      anyOf:
+        - type: 'null'
+    OpaqueUnion:
+      type: object
+      properties:
+        value:
+          anyOf:
+            - type: string
+            - {}
+    NullEnum:
+      type: object
+      properties:
+        value:
+          anyOf:
+            - type: string
+            - enum: [null]
+    # `oneOf` must behave exactly like `anyOf` here: validators emit both, and
+    # the null member has to survive either way.
+    OneOfNullable:
+      type: object
+      properties:
+        value:
+          oneOf:
+            - type: integer
+            - type: 'null'
+    # N3: *named object* schemas that are themselves nullable. Both spellings
+    # used to fall through to the interface branch, which renders only
+    # `properties`, so `| null` was silently lost.
+    NullableObject:
+      # OpenAPI 3.0 spelling.
+      type: object
+      nullable: true
+      required: [id]
+      properties:
+        id: {type: string}
+        meta: {$ref: '#/components/schemas/Item'}
+    NullableObject31:
+      # OpenAPI 3.1 spelling.
+      type: [object, 'null']
+      properties:
+        id: {type: string}
+    # Same, combined with `additionalProperties`: the alias must keep the
+    # members, the index signature and the null.
+    NullableMap:
+      type: object
+      nullable: true
+      properties:
+        id: {type: string}
+      additionalProperties: {type: number}
+    NullableMap31:
+      type: [object, 'null']
+      properties:
+        id: {type: string}
+      additionalProperties: {type: number}
+    # Nullable object-like schemas with *no* declared properties. They must
+    # still keep `| null` and the map semantics: gating the alias branch on
+    # `properties` being non-empty silently emitted a bare
+    # `Record<string, unknown>` (3.0) or `export interface X {}` (3.1).
+    EmptyNullable30:
+      type: object
+      nullable: true
+      properties: {}
+    EmptyNullable31:
+      type: [object, 'null']
+      properties: {}
+    # Control: a non-nullable object with an empty `properties` map keeps the
+    # bare-record alias byte-identically.
+    EmptyPlain:
+      type: object
+      properties: {}
+    # Control: a non-nullable object with properties (and none with
+    # `additionalProperties`) must keep emitting an interface byte-identically.
+    PlainObject:
+      type: object
+      required: [id]
+      properties:
+        id: {type: string}

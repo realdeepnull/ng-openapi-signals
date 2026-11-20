@@ -1,0 +1,111 @@
+openapi: 3.0.3
+info:
+  title: Generated name collision fixture
+  version: 1.0.0
+paths:
+  # A schema literally named `Index` maps to `models/index.ts` — the barrel's own
+  # file name. Without reserving `index`, the declaration is written and then
+  # overwritten by the barrel, which ends up re-exporting itself
+  # (`export * from './index';` → TS2303/TS2305). The operation makes the
+  # `Index` model reachable, so a lost declaration is a compile error in the
+  # resource file as well.
+  /indexes/{id}:
+    get:
+      operationId: getIndex
+      tags: [Indexes]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Index'
+  # Tag `Users` derives the class name `UsersApi`; a schema of the same name is
+  # imported into that module under its own name, so the class must be renamed
+  # (`UsersApi2`) — otherwise two module-scope bindings share one identifier
+  # (TS2300) while generation, Prettier and the CLI all report success. The same
+  # rename is required by the root barrel, which re-exports `./models` and
+  # `./resources` side by side (two `export *` of one name is TS2308).
+  /users/{id}:
+    get:
+      operationId: getUser
+      tags: [Users]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsersApi'
+  /wrappers:
+    get:
+      operationId: getWrapper
+      tags: [Users]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Wrapper'
+  # Tag `Orders` derives `OrdersApi`, and the document declares a schema of that
+  # name. This group's operations never reference it (`Indexes` imports it
+  # instead), but that does not matter: the generated root `index.ts` re-exports
+  # both `./models` and `./resources`, and two `export *` of one name is TS2308
+  # ("Module './models' has already exported a member named 'OrdersApi'"). The
+  # class therefore takes the suffix (`export class OrdersApi2`). The rule is
+  # document-wide, not per-module.
+  /orders:
+    get:
+      operationId: getOrder
+      tags: [Orders]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Wrapper'
+  # The `OrdersApi` schema is imported *here* — the `Indexes` group, whose class
+  # is `IndexesApi`. This keeps the schema reachable so a lost rename (or an
+  # over-eager class suffix) is visible in a compiling tree.
+  /order-schemas:
+    get:
+      operationId: getOrderSchema
+      tags: [Indexes]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrdersApi'
+components:
+  schemas:
+    Index:
+      type: object
+      properties:
+        value: {type: string}
+    UsersApi:
+      type: object
+      properties:
+        id: {type: string}
+    Wrapper:
+      type: object
+      properties:
+        index: {$ref: '#/components/schemas/Index'}
+        owner: {$ref: '#/components/schemas/UsersApi'}
+    OrdersApi:
+      type: object
+      properties:
+        number: {type: string}

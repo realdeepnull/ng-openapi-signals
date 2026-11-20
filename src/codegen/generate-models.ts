@@ -7,6 +7,7 @@ import {
   type ModelNames,
 } from './naming';
 import {schemaToTsType} from './schema-to-ts';
+import {collectModelReferences} from './model-refs';
 import type {OpenApiDocument} from './document';
 import type {OpenAPISchema} from '../openapi';
 
@@ -76,6 +77,38 @@ function extractSchemaModel(name: string, schema: OpenAPISchema, names: ModelNam
     };
   }
 
+  // Object schema that declares `additionalProperties` *or* is nullable → type
+  // alias, so the members, the index signature/closed-object semantics and
+  // `| null` are all rendered by the single `objectToTsType()` /
+  // `withNullable()` implementation: `{ id?: string } & Record<string, number>`,
+  // `{ … } & Record<string, unknown>` for `additionalProperties: true`, `{ … }`
+  // for `false`, and `{ id?: string } | null` for `nullable: true` /
+  // `type: [object, 'null']`.
+  //
+  // The nullability test is deliberately *not* gated on `properties` being
+  // non-empty: `{type: object, nullable: true, properties: {}}` and
+  // `{type: [object, 'null'], properties: {}}` are the same object shape as a
+  // bare `type: object` and must render `Record<string, unknown> | null`, not
+  // the bare record and not `export interface X {}`. The type-array spelling
+  // would otherwise fall into the interface branch below, losing both the
+  // `| null` and the map semantics.
+  //
+  // Rendering these as an interface would silently drop both the
+  // `additionalProperties` index signature and the nullability (the interface
+  // branch only renders `properties`). The interface branch stays reachable
+  // for the common non-nullable object case, whose output must not change.
+  if (
+    isObjectLike(schema) &&
+    (schema.additionalProperties !== undefined || isNullableSchema(schema))
+  ) {
+    return {
+      name,
+      kind: 'alias',
+      properties: [],
+      aliasType: schemaToTsType(schema, names),
+    };
+  }
+
   // Bare `type: object` (no/empty `properties`, no `additionalProperties`) → type
   // alias `Record<string, unknown>`. Consistent with `objectToTsType()` (inline
   // path) and avoids empty interfaces like `export interface Object {}` that
@@ -108,52 +141,110 @@ function extractSchemaModel(name: string, schema: OpenAPISchema, names: ModelNam
   };
 }
 
+/**
+ * Whether the schema declares itself nullable through a *type keyword*.
+ *
+ * Covers the OpenAPI 3.0 spelling (`nullable: true`) and the OpenAPI 3.1 type
+ * array (`type: [..., 'null']`).
+ *
+ * Composition nullability (`oneOf`/`anyOf` with a null member) is deliberately
+ * not consulted here: this predicate is only used for object-like schemas, and
+ * {@link isObjectLike} returns `false` for every composition, so a
+ * `oneOf`/`anyOf` clause would be unreachable. Compositions render `| null`
+ * themselves in `schemaToTsType()`.
+ */
+function isNullableSchema(schema: OpenAPISchema): boolean {
+  if (schema.nullable === true) {
+    return true;
+  }
+
+  return Array.isArray(schema.type) && schema.type.includes('null');
+}
+
+/**
+ * Whether the schema describes an object, including the OpenAPI 3.1 spelling
+ * `type: ['object', 'null']` and schemas that only declare `properties` /
+ * `additionalProperties` without a `type`.
+ *
+ * Compositions are excluded: they render their own intersection, so
+ * `objectToTsType()` is not reached for them and their precedence must stay
+ * unchanged.
+ */
+function isObjectLike(schema: OpenAPISchema): boolean {
+  if (schema.$ref || schema.allOf || schema.oneOf || schema.anyOf) {
+    return false;
+  }
+
+  return (
+    schema.type === undefined ||
+    schema.type === 'object' ||
+    (Array.isArray(schema.type) && schema.type.includes('object'))
+  );
+}
+
 export function generateModelFiles(schemas: SchemaModel[]): Record<string, string> {
   const files: Record<string, string> = {};
-  const schemaNames = new Set(schemas.map((s) => s.name));
   const usedFileNames = new Set<string>();
   const exports: string[] = [];
+
+  // `models/index.ts` is the barrel this function writes below; a schema named
+  // `Index` must not claim that file name, or the barrel overwrites it.
+  usedFileNames.add('index');
+
+  // Resolve every file name before rendering any file: model files import each
+  // other directly (`./user` instead of the `./index` barrel), so the target
+  // file name must be known while imports are rendered. Importing through the
+  // barrel created a cycle per model (`x.ts` → `index.ts` → `x.ts`).
+  const fileNames = new Map<string, string>();
 
   for (const schema of schemas) {
     // Sanitized names can collide (`User` / `user` → both `user`) and file
     // systems are case-insensitive. Deduplicate rather than silently
     // overwriting a previously generated model file.
-    const fileName = uniqueFileName(kebabCase(schema.name), usedFileNames, 'model');
+    fileNames.set(schema.name, uniqueFileName(kebabCase(schema.name), usedFileNames, 'model'));
+  }
+
+  for (const schema of schemas) {
+    const fileName = fileNames.get(schema.name)!;
 
     if (schema.kind === 'enum') {
-      files[`models/${fileName}.ts`] = generateEnumType(schema, schemaNames);
+      files[`models/${fileName}.ts`] = generateEnumType(schema, fileNames);
     } else if (schema.kind === 'alias') {
-      files[`models/${fileName}.ts`] = generateAliasType(schema, schemaNames);
+      files[`models/${fileName}.ts`] = generateAliasType(schema, fileNames);
     } else {
-      files[`models/${fileName}.ts`] = generateInterface(schema, schemaNames);
+      files[`models/${fileName}.ts`] = generateInterface(schema, fileNames);
     }
 
     exports.push(`export * from './${fileName}';`);
   }
 
-  files['models/index.ts'] = exports.join('\n') + '\n';
+  // A barrel with no exports is only comments, which is not a module — the
+  // root `index.ts` re-exports from it and `tsc` then fails with TS2306
+  // ("File ... is not a module"). Specs without any schema are valid, so emit
+  // an explicit empty module instead.
+  files['models/index.ts'] = exports.length > 0 ? exports.join('\n') + '\n' : 'export {};\n';
 
   return files;
 }
 
-function generateEnumType(schema: SchemaModel, allSchemaNames: Set<string>): string {
+function generateEnumType(schema: SchemaModel, modelFiles: ReadonlyMap<string, string>): string {
   // An empty `enum: []` would emit `export type X = ;` — invalid TypeScript.
   const values = (schema.values ?? []).map((v) => JSON.stringify(v)).join(' | ') || 'never';
-  const imports = collectModelImportsForType(values, allSchemaNames, schema.name);
+  const imports = collectModelImportsForType(values, modelFiles, schema.name);
 
   return `${imports}export type ${schema.name} = ${values};
 `;
 }
 
-function generateAliasType(schema: SchemaModel, allSchemaNames: Set<string>): string {
+function generateAliasType(schema: SchemaModel, modelFiles: ReadonlyMap<string, string>): string {
   const aliasType = schema.aliasType || 'unknown';
-  const imports = collectModelImportsForType(aliasType, allSchemaNames, schema.name);
+  const imports = collectModelImportsForType(aliasType, modelFiles, schema.name);
 
   return `${imports}export type ${schema.name} = ${aliasType};
 `;
 }
 
-function generateInterface(schema: SchemaModel, allSchemaNames: Set<string>): string {
+function generateInterface(schema: SchemaModel, modelFiles: ReadonlyMap<string, string>): string {
   const properties = schema.properties
     .map((property) => {
       const optional = property.required ? '' : '?';
@@ -161,7 +252,7 @@ function generateInterface(schema: SchemaModel, allSchemaNames: Set<string>): st
     })
     .join('\n');
 
-  const imports = collectModelImportsForSchema(schema, allSchemaNames);
+  const imports = collectModelImportsForSchema(schema, modelFiles);
 
   return `${imports}export interface ${schema.name} {
 ${properties}
@@ -169,74 +260,89 @@ ${properties}
 `;
 }
 
-function collectModelImportsForSchema(schema: SchemaModel, allSchemaNames: Set<string>): string {
+/**
+ * Renders a `import type` statement for the model files a type expression
+ * references, grouped by target file.
+ *
+ * Model imports are always type-only (every model is an `interface` or a `type`
+ * alias), which keeps `verbatimModuleSyntax` happy and removes the import
+ * entirely at compile time. Importing from the target file rather than
+ * `./index` also removes the cycle between the model file and the barrel.
+ */
+function renderModelImports(
+  typeNames: Set<string>,
+  modelFiles: ReadonlyMap<string, string>,
+): string {
+  if (typeNames.size === 0) {
+    return '';
+  }
+
+  const byFile = new Map<string, string[]>();
+
+  for (const name of Array.from(typeNames).sort()) {
+    const file = modelFiles.get(name);
+
+    // `typeNameFromRef()` falls back to a sanitized name for references that
+    // are not in this document; such a symbol has no local file to import.
+    if (!file) {
+      continue;
+    }
+
+    const names = byFile.get(file) ?? [];
+    names.push(name);
+    byFile.set(file, names);
+  }
+
+  if (byFile.size === 0) {
+    return '';
+  }
+
+  return (
+    Array.from(byFile.entries())
+      // Code-unit order, not `localeCompare()`: generated output must be
+      // deterministic and must not depend on the host locale.
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([file, names]) => `import type { ${names.join(', ')} } from './${file}';\n`)
+      .join('') + '\n'
+  );
+}
+
+function collectModelImportsForSchema(
+  schema: SchemaModel,
+  modelFiles: ReadonlyMap<string, string>,
+): string {
   const types = new Set<string>();
 
   for (const property of schema.properties) {
-    collectType(property.type, types, allSchemaNames);
+    collectType(property.type, types, new Set(modelFiles.keys()));
   }
 
   // Don't import yourself
   types.delete(schema.name);
 
-  if (types.size === 0) {
-    return '';
-  }
-
-  return `import { ${Array.from(types).sort().join(', ')} } from './index';\n\n`;
+  return renderModelImports(types, modelFiles);
 }
 
 function collectModelImportsForType(
   type: string,
-  allSchemaNames: Set<string>,
+  modelFiles: ReadonlyMap<string, string>,
   selfName: string,
 ): string {
-  const types = new Set<string>();
-  collectType(type, types, allSchemaNames);
-  types.delete(selfName);
+  const referenced = new Set<string>();
 
-  if (types.size === 0) {
-    return '';
-  }
+  collectType(type, referenced, new Set(modelFiles.keys()));
 
-  return `import { ${Array.from(types).sort().join(', ')} } from './index';\n\n`;
+  referenced.delete(selfName);
+
+  return renderModelImports(referenced, modelFiles);
 }
 
-export function collectType(type: string, output: Set<string>, schemaNames: Set<string>): void {
-  if (!type) {
-    return;
-  }
-
-  // Unwrap a single surrounding pair of parentheses so that array-of-union
-  // types like `('A' | 'B' | 'C')[]` are recursed into correctly: strip `[]`
-  // first → `('A' | 'B' | 'C')` → unwrap parens → union split branch.
-  if (type.startsWith('(') && type.endsWith(')')) {
-    type = type.slice(1, -1);
-  }
-
-  if (type.endsWith('[]')) {
-    collectType(type.slice(0, -2), output, schemaNames);
-    return;
-  }
-
-  if (type.startsWith('Record<string, ') && type.endsWith('>')) {
-    const inner = type.slice('Record<string, '.length, -1);
-    collectType(inner, output, schemaNames);
-    return;
-  }
-
-  if (type.includes(' | ') || type.includes(' & ')) {
-    for (const part of type.split(/[ |&]+/)) {
-      collectType(part.trim(), output, schemaNames);
-    }
-    return;
-  }
-
-  if (type.startsWith('"') || type.startsWith("'")) {
-    return;
-  }
-
-  if (schemaNames.has(type)) {
-    output.add(type);
-  }
+/**
+ * Collects the declared model names a rendered type expression references.
+ *
+ * Delegates to {@link collectModelReferences} so the model files and the
+ * resource files cannot drift apart again.
+ */
+function collectType(type: string, output: Set<string>, schemaNames: Set<string>): void {
+  collectModelReferences(type, schemaNames, output);
 }

@@ -27,6 +27,158 @@ paths:
                 type: array
                 items:
                   type: string
+  /colliding/{user-id}:
+    get:
+      operationId: findCollidingParams
+      tags: [Header]
+      parameters:
+        # These three names all normalize to the identifier `userId`, which
+        # would emit duplicate `const` declarations (TS2451) in the params
+        # factory if the local names were derived from the name alone.
+        - name: user-id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: userId
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: user_id
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Deleted.
+  # The same *name* in two locations is legal OpenAPI (uniqueness is
+  # name + `in`). The path template may only interpolate the `in: path` entry;
+  # a name-keyed lookup let the query param win and left the path param's
+  # local unused (TS6133). Public keys are location-suffixed when a name
+  # collides (`idPath` / `idQuery`); `X-Id` does not collide and keeps its
+  # verbatim key.
+  /colliding-name/{id}:
+    get:
+      operationId: getCollidingName
+      tags: [Collide]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: id
+          in: query
+          required: false
+          schema: {type: string}
+        - name: X-Id
+          in: header
+          required: false
+          schema: {type: string}
+      responses:
+        '204':
+          description: ok
+    delete:
+      operationId: deleteCollidingName
+      tags: [Collide]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: id
+          in: query
+          required: false
+          schema: {type: string}
+        - name: X-Id
+          in: header
+          required: false
+          schema: {type: string}
+      responses:
+        '204':
+          description: deleted
+  # The same name in *all three* locations: every key must get its own
+  # location suffix (`idPath` / `idQuery` / `idHeader`).
+  /colliding-three/{id}:
+    put:
+      operationId: putCollidingThree
+      tags: [Collide]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: id
+          in: query
+          required: false
+          schema: {type: string}
+        - name: id
+          in: header
+          required: true
+          schema: {type: string}
+      responses:
+        '204':
+          description: updated
+  # A location suffix may itself collide with another parameter's literal name.
+  # The spec is still legal, and the previous output had duplicate keys here
+  # too, so the colliding pair must be deduplicated deterministically while
+  # the literal `idPath` keeps its key.
+  /colliding-suffix/{id}:
+    post:
+      operationId: postCollidingSuffix
+      tags: [Collide]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: id
+          in: query
+          required: false
+          schema: {type: string}
+        - name: idPath
+          in: query
+          required: false
+          schema: {type: string}
+      responses:
+        '204':
+          description: posted
+  # A colliding name that is not a valid identifier: the suffixed key must be
+  # quoted (`'user-idPath'` / `'user-idQuery'`) and accessed with brackets.
+  /colliding-bracket/{user-id}:
+    get:
+      operationId: getCollidingBracket
+      tags: [Collide]
+      parameters:
+        - name: user-id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: user-id
+          in: query
+          required: false
+          schema: {type: string}
+      responses:
+        '204':
+          description: ok
+  # A placeholder with no matching `in: path` parameter (invalid per OpenAPI,
+  # but the generator must not emit a reference to a non-existent property) and
+  # a path param whose name is not a valid identifier. Both were handled by the
+  # old name-keyed lookup and must keep working now that only path params are
+  # considered.
+  /literal/{missing}/{user-id}:
+    get:
+      operationId: getLiteralPlaceholder
+      tags: [Collide]
+      parameters:
+        - name: user-id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '204':
+          description: ok
   /users/{id}:
     delete:
       operationId: deleteUserWithHeader

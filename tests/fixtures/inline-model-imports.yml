@@ -1,0 +1,97 @@
+openapi: 3.1.0
+info:
+  title: Inline response and parameter shapes that reference models
+  version: 1.0.0
+paths:
+  # `Record<string, never>` (closed empty object) and `never` (empty enum) are
+  # *emitted* type keywords, not model names. They must never appear in the
+  # `import type { … } from '../models'` line — `import type {never}` does not
+  # compile. Neither schema is hoisted (no `properties`, an `enum` keyword), so
+  # both reach the resource file as inline type expressions.
+  /closed:
+    get:
+      operationId: getClosed
+      tags: [Shapes]
+      parameters:
+        - name: filter
+          in: query
+          schema:
+            type: string
+            enum: []
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+  # OpenAPI 3.1 nullable object, not hoisted (`type` is an array, so the hoist
+  # pass does not see `type: object`). The rendered type is
+  # `{ user?: User } | null`, whose spaces used to be treated as union
+  # separators — producing the imports `{`, `user?:` and `}`. The referenced
+  # `$ref` must still be imported.
+  /nullable-response:
+    get:
+      operationId: getNullableResponse
+      tags: [Shapes]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: [object, 'null']
+                properties:
+                  user:
+                    $ref: '#/components/schemas/User'
+  # Same shape as a query parameter, which is inline in the params type.
+  /nullable-param:
+    get:
+      operationId: getByNullableParam
+      tags: [Shapes]
+      parameters:
+        - name: filter
+          in: query
+          schema:
+            type: [object, 'null']
+            properties:
+              tag:
+                $ref: '#/components/schemas/Tag'
+      responses:
+        '204':
+          description: no content
+  # Property *keys* and enum *values* named like models are not references. This
+  # operation is alone in its group, so its resource file has no other reason to
+  # import `User` or `Tag`: a collector that scans raw tokens emits an import
+  # here that is never used (TS6133 under `noUnusedLocals`).
+  /shadow-names:
+    get:
+      operationId: getShadowNames
+      tags: [Shadow]
+      parameters:
+        - name: shape
+          in: query
+          schema:
+            type: [object, 'null']
+            properties:
+              User: {type: string}
+              Tag: {type: number}
+        - name: state
+          in: query
+          schema:
+            type: string
+            enum: ['User', 'active']
+      responses:
+        '204':
+          description: no content
+components:
+  schemas:
+    User:
+      type: object
+      properties:
+        id: {type: string}
+    Tag:
+      type: object
+      properties:
+        label: {type: string}

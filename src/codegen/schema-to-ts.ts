@@ -42,8 +42,33 @@ export function schemaToTsType(schema: OpenAPISchema | undefined, names?: ModelN
 
   if (schema.oneOf || schema.anyOf) {
     const subs = schema.oneOf ?? schema.anyOf ?? [];
-    const parts = subs.map((sub) => schemaToTsType(sub, names)).filter(isKnownType);
-    return withNullable(parts.length > 0 ? parts.join(' | ') : 'unknown', schema);
+
+    // OpenAPI 3.1 spells nullability as `anyOf: [T, {type: 'null'}]`. That
+    // member renders as `unknown`, so it must be detected *before* rendering —
+    // otherwise `isKnownType()` drops it and the union silently loses `null`.
+    const nullMembers = subs.filter(isNullSchema).length;
+    const rendered = subs
+      .filter((sub) => !isNullSchema(sub))
+      .map((sub) => schemaToTsType(sub, names));
+    const parts = rendered.filter(isKnownType);
+
+    // A member without any type keyword (`{}`) means "anything". Dropping it
+    // would *narrow* the union: `anyOf: [{type: 'string'}, {}]` allows any
+    // value, so it must stay `unknown` — not become `string`.
+    const opaque = rendered.some((type) => type === 'unknown');
+
+    if (nullMembers === 0) {
+      if (parts.length === 0) {
+        return 'unknown';
+      }
+      return withNullable(opaque ? 'unknown' : parts.join(' | '), schema);
+    }
+
+    // `anyOf: [null]` and duplicate null members collapse to a single `null`.
+    if (opaque) {
+      return 'unknown';
+    }
+    return withNullable(parts.length > 0 ? `${parts.join(' | ')} | null` : 'null', schema);
   }
 
   if (schema.$ref) {
@@ -74,6 +99,11 @@ export function schemaToTsType(schema: OpenAPISchema | undefined, names?: ModelN
     case 'array':
       return withNullable(arrayToTsType(schema, names), schema);
 
+    // OpenAPI 3.1 nullable type — reachable when a schema is a bare
+    // `{type: 'null'}` outside a composition.
+    case 'null':
+      return 'null';
+
     case 'integer':
     case 'number':
     case 'boolean':
@@ -99,6 +129,30 @@ export function schemaToTsType(schema: OpenAPISchema | undefined, names?: ModelN
 /** Whether a rendered type carries actual information. */
 function isKnownType(type: string): boolean {
   return type !== '' && type !== 'unknown';
+}
+
+/**
+ * Whether a schema only describes `null`.
+ *
+ * Covers the spellings that occur in the wild for OpenAPI 3.1 nullability:
+ * `{type: 'null'}`, `{type: ['null']}` and `{enum: [null]}`. A `{type: 'null'}`
+ * member inside `anyOf`/`oneOf` must be recognised before rendering, because
+ * rendering it yields `unknown`, which the union builder then discards.
+ */
+export function isNullSchema(schema: OpenAPISchema | undefined): boolean {
+  if (!schema || typeof schema !== 'object') {
+    return false;
+  }
+
+  if (schema.type === 'null') {
+    return true;
+  }
+
+  if (Array.isArray(schema.type) && schema.type.length === 1 && schema.type[0] === 'null') {
+    return true;
+  }
+
+  return Array.isArray(schema.enum) && schema.enum.length === 1 && schema.enum[0] === null;
 }
 
 /**
@@ -183,6 +237,13 @@ function objectToTsType(schema: OpenAPISchema, names?: ModelNames): string {
     // both is unsound for heterogeneous objects, so a pure map (no declared
     // properties) stays a plain `Record`.
     return propertyNames.length === 0 ? record : `{ ${members} } & ${record}`;
+  }
+
+  // `additionalProperties: true` allows arbitrary extra keys. Declared members
+  // must stay visible, so the open record is intersected with the members
+  // rather than replacing them.
+  if (additionalProperties === true && propertyNames.length > 0) {
+    return `{ ${members} } & Record<string, unknown>`;
   }
 
   // No properties and additionalProperties: true (or unspecified) → open record

@@ -57,6 +57,23 @@ function separatorFor(style: 'form' | 'spaceDelimited' | 'pipeDelimited' | 'deep
   return style === 'spaceDelimited' ? ' ' : style === 'pipeDelimited' ? '|' : ',';
 }
 
+function serializeScalar(key: string, value: unknown, style: string): string {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => serializeScalar(key, item, style))
+      .join(separatorFor(style as 'form'));
+  }
+
+  if (typeof value === 'object' && value !== null) {
+    throw new TypeError(
+      `Query parameter '${key}' is a nested object, which no OpenAPI query style can serialize. ` +
+        `Flatten it, or send it in the request body.`,
+    );
+  }
+
+  return String(value);
+}
+
 function appendQueryParam(
   url: URL,
   key: string,
@@ -67,10 +84,13 @@ function appendQueryParam(
   if (Array.isArray(value)) {
     if (explode) {
       for (const item of value) {
-        url.searchParams.append(key, String(item));
+        url.searchParams.append(key, serializeScalar(key, item, style));
       }
     } else {
-      url.searchParams.set(key, value.map((v) => String(v)).join(separatorFor(style)));
+      url.searchParams.set(
+        key,
+        value.map((v) => serializeScalar(key, v, style)).join(separatorFor(style)),
+      );
     }
     return;
   }
@@ -80,14 +100,14 @@ function appendQueryParam(
 
     if (style === 'deepObject') {
       for (const [prop, val] of entries) {
-        url.searchParams.append(`${key}[${prop}]`, String(val));
+        url.searchParams.append(`${key}[${prop}]`, serializeScalar(`${key}[${prop}]`, val, style));
       }
       return;
     }
 
     if (explode) {
       for (const [prop, val] of entries) {
-        url.searchParams.append(prop, String(val));
+        url.searchParams.append(prop, serializeScalar(prop, val, style));
       }
       return;
     }
@@ -95,19 +115,54 @@ function appendQueryParam(
     const sep = separatorFor(style);
     url.searchParams.set(
       key,
-      entries.map(([prop, val]) => `${prop}${sep}${String(val)}`).join(sep),
+      entries.map(([prop, val]) => `${prop}${sep}${serializeScalar(prop, val, style)}`).join(sep),
     );
     return;
   }
 
-  url.searchParams.set(key, String(value));
+  url.searchParams.set(key, serializeScalar(key, value, style));
 }
 function buildUrl(
   baseUrl: string,
   path: string,
   query?: Record<string, unknown | QueryParamOptions>,
 ): string {
-  const url = new URL(path, baseUrl);
+  const normalizedPath = path.startsWith('/') ? path : '/' + path;
+  const resolvedBase = baseUrl || (typeof document === 'undefined' ? '' : document.baseURI);
+
+  if (resolvedBase.startsWith('//') || /[?#]/.test(resolvedBase)) {
+    const joined = new URL(resolvedBase, 'http://localhost');
+    joined.pathname = `${joined.pathname.replace(/\/+$/, '')}${normalizedPath}`;
+
+    for (const [key, raw] of Object.entries(query ?? {})) {
+      if (raw === undefined || raw === null) {
+        continue;
+      }
+      const isWrapped =
+        typeof raw === 'object' &&
+        raw !== null &&
+        !Array.isArray(raw) &&
+        'value' in raw &&
+        'style' in raw;
+
+      if (isWrapped) {
+        const opts = raw as QueryParamOptions;
+        if (opts.value === undefined || opts.value === null) {
+          continue;
+        }
+        appendQueryParam(joined, key, opts.value, opts.style, opts.explode);
+      } else {
+        appendQueryParam(joined, key, raw, 'form', true);
+      }
+    }
+
+    return joined.toString();
+  }
+
+  const base = resolvedBase.replace(/\/+$/, '');
+  const joinedUrl = base + normalizedPath;
+  const isAbsolute = /^[a-z][a-z0-9+.-]*:\/\//i.test(joinedUrl);
+  const url = isAbsolute ? new URL(joinedUrl) : new URL(joinedUrl, 'http://localhost');
 
   for (const [key, raw] of Object.entries(query ?? {})) {
     if (raw === undefined || raw === null) {
@@ -132,7 +187,9 @@ function buildUrl(
     }
   }
 
-  return url.toString();
+  const result = url.toString();
+
+  return isAbsolute ? result : result.slice('http://localhost'.length);
 }
 
 async function parseJson(response: Response): Promise<unknown> {

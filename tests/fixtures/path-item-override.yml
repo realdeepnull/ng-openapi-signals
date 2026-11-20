@@ -1,0 +1,78 @@
+openapi: 3.0.3
+info: {title: path item parameter override fixture, version: '1.0'}
+components:
+  parameters:
+    # Reusable path-item parameters. They are still `$ref` objects after
+    # `bundle()`, so the merge must compare the *resolved* `name`/`in` with the
+    # inline operation parameter — otherwise the `$ref` copy survives next to
+    # the override and the wire object gets a duplicate key.
+    IdPath:
+      name: id
+      in: path
+      required: true
+      description: Reusable path-item definition (overridden below).
+      schema: {type: string}
+    Trace:
+      name: X-Trace
+      in: header
+      required: false
+      description: Reusable path-item parameter without an operation override.
+      schema: {type: string}
+paths:
+  # Path-item parameters may be overridden by the operation (uniqueness is
+  # `(name, in)`). Concatenating the two lists emitted `id` and `page` twice,
+  # which `assignParamKeys()` disambiguated but the wire objects still keyed by
+  # `param.name` — a duplicate object key (TS1117), plus an unused
+  # `resolved_*` local (TS6133). After the merge each name occurs exactly once,
+  # at its path-item position, and the operation-level definition wins.
+  /override/{id}:
+    parameters:
+      - name: X-Trace
+        in: header
+        required: false
+        description: Path-item parameter without an operation override.
+        schema: {type: string}
+      - name: id
+        in: path
+        required: true
+        description: Path-item definition (overridden below).
+        schema: {type: string}
+      - name: page
+        in: query
+        required: false
+        description: Path-item definition (overridden below).
+        schema: {type: string}
+    post:
+      operationId: overrideParam
+      tags: [Override]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Operation-level definition wins.
+          schema: {type: integer, format: int64}
+        - name: page
+          in: query
+          required: true
+          description: Operation-level definition wins.
+          schema: {type: integer}
+      responses:
+        '204':
+          description: overridden
+  # The same override, but both path-item parameters are `$ref`s.
+  /ref-override/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+      - $ref: '#/components/parameters/Trace'
+    post:
+      operationId: refOverride
+      tags: [RefOverride]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Operation-level definition wins.
+          schema: {type: integer}
+      responses:
+        '204':
+          description: overridden

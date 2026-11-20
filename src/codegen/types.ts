@@ -114,6 +114,16 @@ export interface ParameterModel {
   location: 'path' | 'query' | 'header';
   required: boolean;
   type: string;
+  /**
+   * Public property key used in the generated params type and object.
+   *
+   * Equal to {@link name} unless the same name also occurs in another
+   * location: OpenAPI uniqueness is `(name, in)`, so a path `id` and a query
+   * `id` are both legal but would emit duplicate property keys (TS2300).
+   * Colliding names are suffixed by location (`idPath`, `idQuery`,
+   * `idHeader`); see `assignParamKeys()`.
+   */
+  key: string;
   /** OpenAPI `style` for query parameters. Defaults to `'form'`. */
   style?: QueryStyle;
   /** OpenAPI `explode` flag. Defaults to `true` for `form` style. */

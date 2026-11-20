@@ -1,0 +1,17 @@
+openapi: 3.0.3
+info: {title: mutation import-only fixture, version: '1.0'}
+paths:
+  # A declared path param without a placeholder in the path template: the
+  # params type needs `MaybeSignal`, but no value is ever read. The generated
+  # file must import `MaybeSignal` type-only and never `readSignalOrValue`.
+  /things:
+    post:
+      operationId: createThing
+      tags: [Things]
+      parameters:
+        - name: ghost
+          in: path
+          required: false
+          schema: {type: string}
+      responses:
+        '204': {description: created}

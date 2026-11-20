@@ -40,7 +40,10 @@ jobs:
         run: npm test -- --run
 
       - name: Check generated output is up to date
-        run: git diff --exit-code examples/generated
+        # `git diff --exit-code examples/generated` could never fail: the
+        # directory is git-ignored and has no tracked files. `--check` compares
+        # the in-memory generation against what is on disk.
+        run: npm run check:example -- --fail-on-stale
 
   release-checks:
     runs-on: ubuntu-latest

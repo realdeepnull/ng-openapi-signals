@@ -16,6 +16,14 @@ paths:
                 $ref: '#/components/schemas/PairList'
 components:
   schemas:
+    User:
+      type: object
+      properties:
+        id: {type: string}
+    Tag:
+      type: object
+      properties:
+        label: {type: string}
     PairList:
       type: object
       required:
@@ -26,3 +34,16 @@ components:
           prefixItems:
             - type: string
             - type: integer
+    # A tuple whose members are `$ref`s. The model file renders
+    # `pair: [User, Tag]`, so both referenced declarations must be imported;
+    # without the import the file fails with TS2304.
+    UserTagPair:
+      type: object
+      required:
+        - pair
+      properties:
+        pair:
+          type: array
+          prefixItems:
+            - $ref: '#/components/schemas/User'
+            - $ref: '#/components/schemas/Tag'
