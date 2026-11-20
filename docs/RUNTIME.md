@@ -2,6 +2,9 @@
 
 Detailed reference for the generated API patterns and runtime internals.
 
+> For the generator's own structure (CLI, config, codegen pipeline and
+> invariants), see [ARCHITECTURE.md](./ARCHITECTURE.md).
+
 ## Generated API Style
 
 ### GET endpoints
